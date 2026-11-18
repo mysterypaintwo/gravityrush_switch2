@@ -205,7 +205,27 @@ Decisions in the patch and the embed layer:
   stack arguments 7–12, and `box64e_bridge_emu` gives a function the whole guest state
   (varargs, odd ABIs).
 
-Next: the ARM64 host program. Port `src/probe.c`'s loader (no x86 asm, no native jump into
+**ARM64 host (switch2/host, 2026-11-18):** `gr_host` boots the real eboot on the Mac: libc
+and module initializers, the eboot entry, a guest thread, semaphores, system modules and
+3.5 GiB of direct memory, then stops at `sceVideoOutOpen`, the first GPU import (same with
+the interpreter). 402 imports are bridged; the 150 not provided are almost all the GPU
+library's (Gnm 50, Font 22, AvPlayer 15, VideoOut, Audio3d, NP stubs) plus libSceFiber (5,
+still Windows-only in the runtime).
+
+- macOS keeps 12–448 GiB for itself (a read-only shared-region reservation, then a range where
+  MAP_FIXED is refused), so on the Mac host memory is at 448–512 GiB and guest memory at
+  512–1008 GiB. Horizon will compute both from its regions at startup.
+- devkitPro's pkg-config comes first on the PATH; the host build uses Homebrew's.
+
+Next steps:
+1. libSceFiber for ARM64: a host stack per fiber plus a snapshot of the emulator registers.
+2. The GPU library (`gpu/`: shadPS4 video core + shim) for arm64 on MoltenVK. Its x86 parts
+   are small (spin_lock, rdtsc, the xbyak SRT pass, which has an `ARCH_X86_64` guard). The
+   real job is GPU page tracking: shadPS4 write-protects guest pages and catches the fault,
+   which Horizon cannot do, so it moves to write tracking or hashing.
+3. Audio, pads and movies already build against SDL3 and FFmpeg on the Mac.
+
+Original next-step note: the ARM64 host program. Port `src/probe.c`'s loader (no x86 asm, no native jump into
 the eboot) and the runtime to arm64 macOS. Every resolved import becomes a bridge, and every
 place where the runtime calls a guest function pointer goes through `box64e_call_guest`.
 The game data comes from the user's PKG: `scripts/pkg_extract.py --only eboot.bin --only
