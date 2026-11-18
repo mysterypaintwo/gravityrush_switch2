@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 
 static FILE *logf;
+static int console_on; /* the console starts after the probe: it also uses the default window */
 
 static void out(const char *fmt, ...) {
     char line[512];
@@ -18,8 +19,7 @@ static void out(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
-    printf("%s\n", line);
-    consoleUpdate(NULL);
+    if (console_on) { printf("%s\n", line); consoleUpdate(NULL); }
     if (logf) { fprintf(logf, "%s\n", line); fflush(logf); }
 }
 
@@ -30,7 +30,7 @@ static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name)
 }
 
 static void probe(void) {
-    out("gr_vkprobe v1 for the Gravity Rush Switch 2 port. Log: sdmc:/gr_vkprobe.txt");
+    out("gr_vkprobe v2 for the Gravity Rush Switch 2 port. Log: sdmc:/gr_vkprobe.txt, Mesa: sdmc:/gr_vkprobe_mesa.txt");
     uint32_t api = 0;
     vkEnumerateInstanceVersion(&api);
     out("instance API %u.%u.%u", VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api), VK_VERSION_PATCH(api));
@@ -155,16 +155,26 @@ static void probe(void) {
     out("vkCreateDevice (queue family 0): %d", r);
     if (r == VK_SUCCESS) vkDestroyDevice(device, NULL);
     vkDestroyInstance(instance, NULL);
-    out("== done. Press + to exit.");
+    out("== done.");
 }
 
 int main(void) {
+    /* v2: Mesa's own messages (why a GPU was or was not found) go to a file, and Vulkan runs
+     * before the text console exists. */
+    setenv("MESA_LOG_LEVEL", "debug", 1);
+    setenv("NVK_DEBUG", "verbose", 1);
+    freopen("sdmc:/gr_vkprobe_mesa.txt", "w", stderr);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    logf = fopen("sdmc:/gr_vkprobe.txt", "w");
+    probe();
+    fflush(stderr);
     consoleInit(NULL);
+    console_on = 1;
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
     padInitializeDefault(&pad);
-    logf = fopen("sdmc:/gr_vkprobe.txt", "w");
-    probe();
+    out("== probe finished (details in sdmc:/gr_vkprobe.txt and sdmc:/gr_vkprobe_mesa.txt)");
+    out("Press + to exit.");
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;

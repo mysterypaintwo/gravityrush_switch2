@@ -225,6 +225,23 @@ Next steps:
    which Horizon cannot do, so it moves to write tracking or hashing.
 3. Audio, pads and movies already build against SDL3 and FFmpeg on the Mac.
 
+**Mac milestone (2026-11-18):** `switch2/host/run_mac.sh <game folder>` plays the game on the
+Mac (M4 Pro): intro, subtitles, sound and keyboard input work, at 60 fps (user test; the
+controller is untested). The GPU library runs on MoltenVK with Mac-only workarounds (dense
+buffer arenas, optional robustness2/nullDescriptor); GPU page tracking still uses faults
+there.
+
+Console steps left before the game can start on the Switch 2:
+1. OunceVK (NVK) capability probe (`switch2/vkprobe`): v1 created an instance but found no
+   GPU; v2 probes before the text console starts and keeps Mesa's log.
+2. box64e on Horizon: the kaiHEN JIT backend (staging buffer + ranged publish) and the
+   Horizon OS layer.
+3. Guest memory on Horizon: host low memory and the guest range placed in the alias region
+   at startup (ASLR), direct memory through svcMapPhysicalMemory.
+4. GPU page tracking without faults: guest writes reported by the dynarec (or hashing).
+5. Window, input, audio and files on Horizon (SDL is not available there: NWindow, HID,
+   audren/audout, sdmc).
+
 Original next-step note: the ARM64 host program. Port `src/probe.c`'s loader (no x86 asm, no native jump into
 the eboot) and the runtime to arm64 macOS. Every resolved import becomes a bridge, and every
 place where the runtime calls a guest function pointer goes through `box64e_call_guest`.

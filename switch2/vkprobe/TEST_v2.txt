@@ -1,0 +1,13 @@
+gr_vkprobe v2: how to test
+==========================
+
+v1 found no GPU ("physical devices: 0"). v2 runs the Vulkan part before the text console starts
+(the console also uses the screen) and keeps the driver's own log.
+
+1. Copy gr_vkprobe.nro to the SD card and start it from hbmenu.
+2. The screen stays black for a moment, then shows "Press + to exit."
+   If it crashes or hangs instead, note how long it took.
+3. Press + to exit.
+4. Copy BOTH files into switch2/logs/:
+     sdmc:/gr_vkprobe.txt
+     sdmc:/gr_vkprobe_mesa.txt
