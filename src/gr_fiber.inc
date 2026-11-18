@@ -135,4 +135,14 @@ static ABI int32_t gr_fiber_get_self(void **out) {
     *out = gr_current->guest;
     return 0;
 }
+#elif defined(GR_FIBER_HOST)
+/* ARM64 hosts: the fibers live in the host program (switch2/host/gr_fiber_arm64.c), which
+ * switches the Box64 emulator's state and host stacks. */
+int32_t gr_fiber_initialize(void *guest, const char *name, uintptr_t entry, uint64_t arg_init,
+                            void *addr_context, uint64_t size_context, const void *opt, uint32_t flags, uint32_t build);
+int32_t gr_fiber_finalize(void *guest);
+int32_t gr_fiber_run(void *guest, uint64_t arg, uint64_t *out_return);
+int32_t gr_fiber_switch(void *guest, uint64_t arg, uint64_t *out_on_run);
+int32_t gr_fiber_return_to_thread(uint64_t arg, uint64_t *out_on_run);
+int32_t gr_fiber_get_self(void **out);
 #endif /* _WIN32 */

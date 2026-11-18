@@ -78,6 +78,12 @@ uintptr_t box64e_guest_address(uintptr_t native_pc);
 /* Nonzero once the calling thread's emulator stopped on an error (bad opcode, guest fault...). */
 int box64e_guest_error(void);
 
+/* The guest CPU state of an emulator (registers, rip, flags, SSE/AVX, x87/MMX, MXCSR, deferred
+ * flags), for switching fibers on one emulator. */
+size_t box64e_state_size(void);
+void box64e_save_state(x64emu_t* emu, void* buffer);
+void box64e_load_state(x64emu_t* emu, const void* buffer);
+
 /* Register access for bridge_emu functions: 0-15 = rax rcx rdx rbx rsp rbp rsi rdi r8-r15. */
 uint64_t box64e_reg(x64emu_t* emu, int reg);
 void box64e_set_reg(x64emu_t* emu, int reg, uint64_t value);

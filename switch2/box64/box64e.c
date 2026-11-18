@@ -2,6 +2,7 @@
  * Box64's own main()/core.c (Linux) or wowbox64.c (Windows WoW64) for a host that loads the
  * guest itself. */
 #include <pthread.h>
+#include <stddef.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -347,6 +348,11 @@ uint64_t box64e_call_guest_fp(uintptr_t fn, int nargs, const uint64_t* args, int
 }
 
 int box64e_guest_error(void) { return box64e_thread_emu()->error; }
+
+/* --- guest CPU state: everything in x64emu_t before the parity table pointer */
+size_t box64e_state_size(void) { return offsetof(x64emu_t, x64emu_parity_tab); }
+void box64e_save_state(x64emu_t* emu, void* buffer) { memcpy(buffer, emu, box64e_state_size()); }
+void box64e_load_state(x64emu_t* emu, const void* buffer) { memcpy(emu, buffer, box64e_state_size()); }
 
 /* --- register access */
 uint64_t box64e_reg(x64emu_t* emu, int reg) { return emu->regs[reg & 15].q[0]; }
