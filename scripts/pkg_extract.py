@@ -13,6 +13,7 @@ Usage:
   python scripts/pkg_extract.py <game.pkg> --info
   python scripts/pkg_extract.py <game.pkg> --list
   python scripts/pkg_extract.py <game.pkg> <out_dir>      # resumable
+  python scripts/pkg_extract.py <game.pkg> <out_dir> --only eboot.bin --only sce_module
 """
 import argparse
 import hashlib
@@ -241,6 +242,8 @@ def main():
     ap.add_argument("out", nargs="?")
     ap.add_argument("--info", action="store_true")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--only", action="append", metavar="PATH",
+                    help="extract only this file or directory (repeatable); sce_sys metadata is always written")
     args = ap.parse_args()
 
     pkg = Pkg(args.pkg)
@@ -259,6 +262,9 @@ def main():
 
     pkg.load_fs()
     items = list(pkg.walk())
+    if args.only:
+        keep = [o.strip("/") for o in args.only]
+        items = [it for it in items if any(it[0] == k or it[0].startswith(k + "/") for k in keep)]
     total = sum(pkg.inodes[i]["size"] for _, i, t in items if t == PFS_FILE)
     nfiles = sum(1 for _, _, t in items if t == PFS_FILE)
     print("files      : %d (%s)" % (nfiles, human(total)))

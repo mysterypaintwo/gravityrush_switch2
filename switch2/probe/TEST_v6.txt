@@ -1,0 +1,18 @@
+gr_probe v6: how to test
+========================
+
+Copy gr_probe.nro to the SD card and start it from hbmenu. A menu appears.
+You don't need to hold any buttons at launch.
+
+Run 1: press A (safe run, no deliberate faults)
+  - It should get to "== done. Press + to exit." If it crashes, note the last line on screen.
+  - Copy these files from the SD root into switch2/logs/:
+      gr_probe_safe.txt
+      gr_code_*.bin   (copies of the loader's code; keep them local, don't commit or share them)
+
+Run 2: start gr_probe again and press X (fault run)
+  - When the screen shows "reading it now", count the seconds until the error:
+    immediate / about 5 s / about 10 s / no error.
+  - Copy gr_probe_fault.txt into switch2/logs/.
+
+Then tell me the run 2 timing.
