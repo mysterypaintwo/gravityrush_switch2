@@ -66,9 +66,15 @@ void box64e_thread_exit(void);
 /* Calls guest code at fn with up to 6 integer arguments on the calling thread's emulator and
  * returns rax. Re-entrant: a bridge may call back into the guest. */
 uint64_t box64e_call_guest(uintptr_t fn, int nargs, ...);
+/* As box64e_call_guest with the arguments in an array (up to 16). */
+uint64_t box64e_call_guest_args(uintptr_t fn, int nargs, const uint64_t* args);
 /* As box64e_call_guest, with float/double arguments in xmm0-7 and the xmm0 result in *fp_ret. */
 uint64_t box64e_call_guest_fp(uintptr_t fn, int nargs, const uint64_t* args, int nfp, const double* fp_args,
                               double* fp_ret);
+/* The guest MXCSR of an emulator (the PS4 starts threads with 0x9fc0: FTZ, DAZ, all masked). */
+void box64e_set_mxcsr(x64emu_t* emu, uint32_t mxcsr);
+/* For a fault in translated code: the guest x86-64 address being run at native pc, or 0. */
+uintptr_t box64e_guest_address(uintptr_t native_pc);
 /* Nonzero once the calling thread's emulator stopped on an error (bad opcode, guest fault...). */
 int box64e_guest_error(void);
 

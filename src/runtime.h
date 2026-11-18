@@ -15,8 +15,29 @@ typedef gow3_jmp_buf sigjmp_buf;
 extern __thread sigjmp_buf *runtime_fault_recover;
 /* Restarts the game (in-game settings menu, render resolution change). */
 void runtime_restart(void);
+#if defined(__x86_64__)
 #define ABI __attribute__((sysv_abi))
+#else
+/* ARM64 hosts (Switch 2 port): guest code runs under Box64, whose bridges call these functions
+ * with the native ABI (switch2/box64/box64e.h). */
+#define ABI
+#endif
 typedef void (ABI *GuestCallback)(void);
+/* Calls into guest (game) code. On x86-64 hosts guest code runs natively and these are plain
+ * calls. On ARM64 hosts it runs under Box64: the host program implements runtime_guest_call
+ * (switch2/host) and every call from the runtime into the game goes through it. The
+ * argument macros pass up to 4 integer or pointer arguments. */
+#if defined(__aarch64__)
+uint64_t runtime_guest_call(uintptr_t fn, int nargs, ...);
+#define GR_ARG(x) ((uint64_t)(uintptr_t)(x))
+#define GUEST_CALL0(fn) runtime_guest_call((uintptr_t)(fn), 0)
+#define GUEST_CALL1(fn, a) runtime_guest_call((uintptr_t)(fn), 1, GR_ARG(a))
+#define GUEST_CALL2(fn, a, b) runtime_guest_call((uintptr_t)(fn), 2, GR_ARG(a), GR_ARG(b))
+#define GUEST_CALL3(fn, a, b, c) runtime_guest_call((uintptr_t)(fn), 3, GR_ARG(a), GR_ARG(b), GR_ARG(c))
+/* The guest thread's TLS base (the loader rewrote fs:[0] into gs:[0]) and MXCSR. */
+void runtime_guest_set_tls_base(void *tcb);
+void runtime_guest_set_mxcsr(uint32_t mxcsr);
+#endif
 void runtime_start(uint64_t capabilities);
 uintptr_t runtime_resolve(const char *name, int is_data);
 void runtime_report(void);

@@ -320,6 +320,22 @@ uint64_t box64e_call_guest(uintptr_t fn, int nargs, ...)
     return call_guest(box64e_thread_emu(), fn, nargs, args);
 }
 
+uint64_t box64e_call_guest_args(uintptr_t fn, int nargs, const uint64_t* args)
+{
+    return call_guest(box64e_thread_emu(), fn, nargs > 16 ? 16 : nargs, args);
+}
+
+void box64e_set_mxcsr(x64emu_t* emu, uint32_t mxcsr)
+{
+    emu->mxcsr.x32 = mxcsr;
+}
+
+uintptr_t box64e_guest_address(uintptr_t native_pc)
+{
+    dynablock_t* db = FindDynablockFromNativeAddress((void*)native_pc);
+    return db ? getX64Address(db, native_pc) : 0;
+}
+
 uint64_t box64e_call_guest_fp(uintptr_t fn, int nargs, const uint64_t* args, int nfp, const double* fp_args,
                               double* fp_ret)
 {

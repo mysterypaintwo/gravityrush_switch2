@@ -12,7 +12,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#if defined(__x86_64__)
 #include <x86intrin.h>
+#endif
 #ifndef _WIN32
 #include <sys/random.h>
 #include <sys/resource.h>
@@ -85,6 +87,16 @@ static ABI uint64_t process_time_counter(void) {
     return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000000+(uint64_t)(t.tv_nsec-process_start.tv_nsec);
 }
 static ABI uint64_t process_time_frequency(void) { return 1000000000; }
+#if defined(__aarch64__)
+/* ARM64 hosts: the generic timer, which is also what Box64 returns for the guest's own RDTSC
+ * (switch2/box64/os_embed.c), so sceKernelReadTsc and RDTSC share one clock and frequency. */
+static ABI uint64_t read_tsc(void) { uint64_t v; __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v)); return v; }
+static uint64_t tsc_hz;
+static ABI uint64_t tsc_frequency(void) {
+    if (!tsc_hz) __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(tsc_hz));
+    return tsc_hz;
+}
+#else
 static ABI uint64_t read_tsc(void) { return __rdtsc(); }
 static uint64_t tsc_hz;
 static ABI uint64_t tsc_frequency(void) {
@@ -102,6 +114,7 @@ static ABI uint64_t tsc_frequency(void) {
     }
     return tsc_hz;
 }
+#endif
 /* Shared with the GPU library so flip/label timestamps use the guest's clock. */
 uint64_t runtime_process_time_us(void) { return process_time(); }
 uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
@@ -268,7 +281,11 @@ static ABI int32_t thread_once(int32_t *once,void (ABI *routine)(void)) {
         int32_t state=__atomic_load_n(once,__ATOMIC_ACQUIRE);
         if (state==1) return 0;
         if (state==0 && __atomic_compare_exchange_n(once,&state,2,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) {
+#if defined(__aarch64__)
+            GUEST_CALL0(routine);
+#else
             routine();
+#endif
             __atomic_store_n(once,1,__ATOMIC_RELEASE);
             return 0;
         }
@@ -312,7 +329,11 @@ void runtime_thread_keys_cleanup(void) {
             void *value=key_values[i];
             if (!value || !keys[i].used || !keys[i].destructor) continue;
             key_values[i]=NULL; any=1;
+#if defined(__aarch64__)
+            GUEST_CALL1(keys[i].destructor, value);
+#else
             keys[i].destructor(value);
+#endif
         }
         if (!any) break;
     }

@@ -14,16 +14,20 @@
 #include <sched.h>
 #include <setjmp.h>
 #include <errno.h>
+#if defined(__x86_64__)
 #include <xmmintrin.h>
+#endif
 #include <math.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
-#include <sys/syscall.h>
 #include <sys/mman.h>
+#if defined(__x86_64__)
+#include <sys/syscall.h>
 #include <asm/prctl.h>
+#endif
 #endif
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define ATTR_MAGIC UINT32_C(0x41545452)
@@ -86,6 +90,9 @@ static void set_gs(void *base) {
     if (!TlsSetValue(tls_slot,base)) { fprintf(stderr,"STOP: TlsSetValue failed (%lu)\n",GetLastError()); exit(21); }
 }
 #define tls_block_alloc(size) _aligned_malloc(size,64)
+#elif defined(__aarch64__)
+static void set_gs(void *base) { runtime_guest_set_tls_base(base); }
+#define tls_block_alloc(size) aligned_alloc(64,size)
 #else
 static void set_gs(void *base) {
     if (syscall(SYS_arch_prctl,ARCH_SET_GS,(unsigned long)base)) { perror("STOP: arch_prctl(ARCH_SET_GS)"); exit(21); }
@@ -148,7 +155,11 @@ void runtime_thread_attach_host(const char *name) {
 void runtime_guest_fpu_init(void) {
     static int use=-1;
     if (use<0) { const char *e=getenv("GOW3_PS4_MXCSR"); use=!(e && e[0]=='0'); }
+#if defined(__aarch64__)
+    runtime_guest_set_mxcsr(use ? 0x9fc0 : 0x1f80);
+#else
     if (use) _mm_setcsr(0x9fc0);
+#endif
 }
 void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
@@ -295,7 +306,11 @@ static void *host_start(void *p) {
     attach(t);
     set_host_name(t->name);
     runtime_guest_fpu_init();
+#if defined(__aarch64__)
+    if (!exit_setjmp(t)) t->result=(void *)(uintptr_t)GUEST_CALL1(t->entry, t->argument);
+#else
     if (!exit_setjmp(t)) t->result=t->entry(t->argument);
+#endif
     runtime_thread_keys_cleanup();
     pthread_mutex_lock(&lock); t->finished=1; ++exited; pthread_mutex_unlock(&lock);
     return t->result;
