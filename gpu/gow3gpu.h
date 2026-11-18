@@ -18,6 +18,10 @@ typedef struct {
 void gow3gpu_register_kernel(void);
 /* Creates window, Vulkan device, presenter and GPU command processor. */
 int gow3gpu_init(const Gow3GpuConfig *config);
+/* macOS: the window was created on the thread that called gow3gpu_init (the main thread);
+ * that thread then pumps its events here and never returns (the game runs on another thread).
+ * Other platforms run the window on a thread of their own. */
+void gow3gpu_main_loop(void);
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */
 uintptr_t gow3gpu_resolve(const char *scoped_nid);
 /* Called first by the loader's SIGSEGV handler: 1 when a GPU page-tracking fault was handled. */

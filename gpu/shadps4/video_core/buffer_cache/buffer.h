@@ -26,6 +26,10 @@ struct VmaAllocationInfo;
 
 namespace VideoCore {
 
+/// gow3: without sparse resident buffers (MoltenVK), MemoryType::Sparse buffers (the buffer
+/// cache's arenas) are ordinary device-local buffers backed in full (set by BufferCache).
+inline bool g_dense_arenas = false;
+
 /// Hints and requirements for the backing memory type of a commit
 enum class MemoryType : u8 {
     DeviceLocal,  ///< Requests device local buffer.

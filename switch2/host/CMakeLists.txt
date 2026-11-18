@@ -1,10 +1,18 @@
 # gr_host: the Gravity Rush ARM64 host (macOS development build). The PC port's runtime
 # (src/runtime*.c) plus the ARM64 loader (gr_host.c) on the embedded Box64 core.
 cmake_minimum_required(VERSION 3.16)
-project(gr_host C ASM)
+project(gr_host C CXX ASM)
 
 set(PORT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 add_subdirectory("${PORT_ROOT}/switch2/box64" box64e)
+
+# The GPU library (shadPS4 video core + shim, gpu/): Vulkan on MoltenVK on the Mac.
+# GR_HOST_GPU=OFF builds without it (gpu_none.c): the game then stops at its first GPU import.
+option(GR_HOST_GPU "Build with the GPU library" ON)
+if(GR_HOST_GPU)
+    set(GOW3_LTO OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${PORT_ROOT}/gpu" gpu)
+endif()
 
 # Homebrew's pkg-config: devkitPro's comes first on the PATH and only knows Switch libraries.
 if(APPLE AND NOT PKG_CONFIG_EXECUTABLE AND EXISTS /opt/homebrew/bin/pkg-config)
@@ -20,7 +28,7 @@ add_library(atrac9 STATIC ${ATRAC9_SOURCES})
 target_compile_options(atrac9 PRIVATE -w)
 
 add_executable(gr_host
-    gr_host.c gpu_none.c gr_fiber_arm64.c gr_ctx_arm64.S
+    gr_host.c gr_fiber_arm64.c gr_ctx_arm64.S $<$<NOT:$<BOOL:${GR_HOST_GPU}>>:gpu_none.c>
     $<$<PLATFORM_ID:Darwin>:host_compat_macos.c>
     ${RUNTIME_SOURCES})
 target_include_directories(gr_host PRIVATE "${PORT_ROOT}" "${PORT_ROOT}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -33,6 +41,13 @@ if(APPLE)
 endif()
 target_compile_options(gr_host PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 target_link_libraries(gr_host PRIVATE box64e atrac9 PkgConfig::HOSTLIBS m pthread)
+if(GR_HOST_GPU)
+    if(APPLE)
+        target_link_directories(gr_host PRIVATE /opt/homebrew/lib)  # Zycore (Zydis' dependency)
+    endif()
+    target_link_libraries(gr_host PRIVATE gow3gpu)
+    target_compile_definitions(gr_host PRIVATE GR_HOST_GPU)
+endif()
 
 # Tests: guest code written in C, built for x86-64 and run under Box64 (tests/extract_text.py).
 find_package(Python3 REQUIRED COMPONENTS Interpreter)

@@ -116,7 +116,7 @@ void Liverpool::Process(std::stop_token stoken) {
     Gow3Stats::gpu_thread_id.store(GetCurrentThreadId());
 #endif
     gpu_id = std::this_thread::get_id();
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
     gpu_tid = gettid();
 #endif
 

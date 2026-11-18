@@ -37,6 +37,10 @@ static uint64_t module_count;
 static int entered_game;
 
 unsigned char *runtime_image_base(void) { return image; }
+/* For the GPU library's calls through game-supplied function pointers (gow3_guest_call.h). */
+int runtime_is_guest_code(uintptr_t address) {
+    return image && address >= (uintptr_t)image && address - (uintptr_t)image < image_size;
+}
 
 static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
 static uint64_t read64(FILE *f) {
@@ -82,10 +86,18 @@ void runtime_guest_set_tls_base(void *tcb) {
 void runtime_guest_set_mxcsr(uint32_t mxcsr) { box64e_set_mxcsr(box64e_thread_emu(), mxcsr); }
 
 /* --- imports */
-/* Runtime functions with more than 6 integer arguments: their bridges read the guest stack. */
+/* Functions with more than 6 integer arguments, whose bridges read arguments 7-12 from the guest
+ * stack: the runtime's (src/runtime*.c) and the GPU library's (gpu/shadps4/core/libraries).
+ * A function missing here gets 0 for those arguments. */
 static const char *const stack_functions[] = {
+    /* runtime */
     "_sceFiberInitializeImpl", "sceAjmBatchJobControlBufferRa", "sceAjmBatchJobRunBufferRa",
     "sceAjmBatchJobRunSplitBufferRa", "sceKernelMapNamedDirectMemory",
+    /* GPU library */
+    "sceFontMemoryInit", "sceGnmDrawIndexIndirect", "sceGnmDrawIndexIndirectCountMulti",
+    "sceGnmDrawIndexIndirectMulti", "sceGnmDrawIndirect", "sceGnmDrawIndirectMulti",
+    "sceGnmRegisterResource", "sceGnmSubmitAndFlipCommandBuffers",
+    "sceGnmSubmitAndFlipCommandBuffersForWorkload", "sceVideoOutSetBufferAttribute",
 };
 static box64e_kind import_kind(const char *nid) {
     const char *api = runtime_import_name(nid);
@@ -115,6 +127,12 @@ static __attribute__((noreturn)) void unresolved(x64emu_t *emu) {
 
 /* --- faults (development host only: Horizon cannot catch them) */
 static void fault(int sig, siginfo_t *info, void *context) {
+#ifdef GR_HOST_GPU
+    /* GPU page tracking: the library write-protects guest pages and unprotects them here
+     * (macOS raises SIGBUS for these). Horizon cannot catch faults: there the dynarec will have
+     * to report guest writes instead (switch2/PLAN.md). */
+    if ((sig == SIGSEGV || sig == SIGBUS) && gow3gpu_handle_fault(context, info->si_addr)) return;
+#endif
     char line[512];
     uintptr_t pc = 0;
 #if defined(__APPLE__)
@@ -132,6 +150,45 @@ static void fault(int sig, siginfo_t *info, void *context) {
     snprintf(line + n, sizeof line - n, "\n");
     ssize_t w = write(2, line, strlen(line));
     (void)w;
+#if defined(__APPLE__)
+    if (runtime_is_guest_code(pc)) {
+        /* host code called a game function pointer natively instead of through Box64 */
+        uintptr_t lr = (uintptr_t)((ucontext_t *)context)->uc_mcontext->__ss.__lr;
+        Dl_info where;
+        n = snprintf(line, sizeof line, "  host code jumped into game code (image offset 0x%lx) from %p",
+                     (unsigned long)(pc - (uintptr_t)image), (void *)lr);
+        if (dladdr((void *)lr, &where) && where.dli_sname)
+            n += snprintf(line + n, sizeof line - n, " (%s+0x%lx)", where.dli_sname,
+                          (unsigned long)(lr - (uintptr_t)where.dli_saddr));
+        snprintf(line + n, sizeof line - n, "\n");
+        w = write(2, line, strlen(line));
+    }
+    if (guest) {
+        /* In translated code the guest registers live in native ones (Box64's arm64_mapping.h,
+         * r8 moved to x9): rax..rdi = x10..x17, r8 = x9, r9..r15 = x19..x25. */
+        const uint64_t *x = ((ucontext_t *)context)->uc_mcontext->__ss.__x;
+        static const char *const regs[16] = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+                                             "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"};
+        uint64_t g[16];
+        for (int i = 0; i < 16; i++) g[i] = i == 8 ? x[9] : i < 8 ? x[10 + i] : x[10 + i];
+        for (int i = 0; i < 16; i++) {
+            n = snprintf(line, sizeof line, "  %-3s %016llx%s", regs[i], (unsigned long long)g[i], (i & 3) == 3 ? "\n" : "");
+            w = write(2, line, n);
+        }
+        /* guest frames: [rbp] = caller's rbp, [rbp+8] = return address */
+        uint64_t rbp = g[5];
+        for (int depth = 0; depth < 16 && rbp && !(rbp & 7); depth++) {
+            const uint64_t *frame = (const uint64_t *)(uintptr_t)rbp;
+            uint64_t ret = frame[1];
+            if (!runtime_is_guest_code((uintptr_t)ret)) break;
+            n = snprintf(line, sizeof line, "  guest frame %d: return to image offset 0x%llx\n", depth,
+                         (unsigned long long)(ret - (uintptr_t)image));
+            w = write(2, line, n);
+            if (frame[0] <= rbp) break;
+            rbp = frame[0];
+        }
+    }
+#endif
     void *frames[24];
     backtrace_symbols_fd(frames, backtrace(frames, 24), 2);
     _exit(128 + sig);
@@ -203,13 +260,57 @@ void runtime_restart(void) {
     _exit(0);
 }
 
+#if defined(__APPLE__) && defined(GR_HOST_GPU)
+/* Cocoa windows and their events belong to the main thread, so on macOS the loader below runs
+ * on a game thread and hands gow3gpu_init to the main thread, which then pumps the window. */
+#include <pthread.h>
+static pthread_mutex_t main_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t main_cond = PTHREAD_COND_INITIALIZER;
+static const Gow3GpuConfig *main_gpu_config;
+static int main_state, main_result; /* 1 GPU init requested, 2 done */
+static int gpu_init(const Gow3GpuConfig *config) {
+    pthread_mutex_lock(&main_lock);
+    main_gpu_config = config;
+    main_state = 1;
+    pthread_cond_broadcast(&main_cond);
+    while (main_state != 2) pthread_cond_wait(&main_cond, &main_lock);
+    pthread_mutex_unlock(&main_lock);
+    return main_result;
+}
+static int host_main(int argc, char **argv);
+typedef struct { int argc; char **argv; } HostArgs;
+static void *game_thread(void *p) {
+    HostArgs *a = p;
+    exit(host_main(a->argc, a->argv));
+}
 int main(int argc, char **argv) {
+    static HostArgs args;
+    args = (HostArgs){argc, argv};
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16 << 20);
+    pthread_t thread;
+    if (pthread_create(&thread, &attr, game_thread, &args)) fail("cannot start the game thread");
+    pthread_mutex_lock(&main_lock);
+    while (main_state != 1) pthread_cond_wait(&main_cond, &main_lock);
+    main_result = gow3gpu_init(main_gpu_config);
+    main_state = 2;
+    pthread_cond_broadcast(&main_cond);
+    pthread_mutex_unlock(&main_lock);
+    if (!main_result) gow3gpu_main_loop();
+    for (;;) pause(); /* the game thread reports the failure and exits */
+}
+static int host_main(int argc, char **argv) {
+#else
+#define gpu_init gow3gpu_init
+int main(int argc, char **argv) {
+#endif
     setvbuf(stdout, NULL, _IONBF, 0);
     page_size = (size_t)sysconf(_SC_PAGESIZE);
-    int strict_imports = 0, check_imports = 0;
+    int strict_imports = 0, check_imports = 0, cpu_only = 0;
     const char *content_profile = NULL, *app0 = NULL, *user_dir = NULL, *patch_file = NULL;
     for (int i = 2; i < argc; ++i) {
-        if (!strcmp(argv[i], "--cpu-only")) continue; /* the ARM64 host has no GPU yet */
+        if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
         else if (!strcmp(argv[i], "--strict-imports")) strict_imports = 1;
         else if (!strcmp(argv[i], "--check-imports")) check_imports = 1;
         else if (!strcmp(argv[i], "--content-profile") && i + 1 < argc) content_profile = argv[++i];
@@ -255,6 +356,12 @@ int main(int argc, char **argv) {
         if (sfo_value(sfo, "INSTALL_DIR_SAVEDATA", id, sizeof(id), NULL) || sfo_value(sfo, "TITLE_ID", id, sizeof(id), NULL))
             runtime_savedata_configure(id);
     }
+
+#ifdef GR_HOST_GPU
+    gow3gpu_register_kernel();
+#else
+    cpu_only = 1;
+#endif
 
     /* --- boot file (G3PROBE5 from link_modules.py) */
     FILE *f = fopen(argv[1], "rb");
@@ -335,6 +442,22 @@ int main(int argc, char **argv) {
     image = allocate(round_page(size));
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
+
+#ifdef GR_HOST_GPU
+    if (!cpu_only) {
+        char title[128] = "PS4 game", serial[16] = "UNKNOWN", sfo[4096];
+        uint32_t attributes = 0;
+        snprintf(sfo, sizeof(sfo), "%s/sce_sys/param.sfo", app0 ? app0 : ".");
+        sfo_value(sfo, "TITLE", title, sizeof(title), NULL);
+        sfo_value(sfo, "TITLE_ID", serial, sizeof(serial), NULL);
+        sfo_value(sfo, "ATTRIBUTE", NULL, 0, &attributes);
+        uint64_t sdk = 0;
+        memcpy(&sdk, image + procparam + 16, 8); /* procparam: size, magic, count, sdk_version */
+        Gow3GpuConfig gpu = {title, serial, user_dir ? user_dir : "user", (uint32_t)sdk, attributes, 1920, 1080};
+        if (gpu_init(&gpu)) fail("GPU initialization failed");
+        printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n", (unsigned)sdk, gow3gpu_symbol_count());
+    }
+#endif
 
     /* --- imports: the runtime's functions and unresolved imports become bridges */
     uintptr_t *function_bridges = calloc(import_count ? import_count : 1, sizeof(*function_bridges));

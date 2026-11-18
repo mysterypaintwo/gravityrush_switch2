@@ -9,7 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
-#include <x86intrin.h>
+#include "gow3_arch.h"
 
 #include "common/thread.h"
 #include "common/types.h"
@@ -72,7 +72,7 @@ public:
         if (done.load(std::memory_order_acquire) != target) {
             const u64 start = __rdtsc();
             while (done.load(std::memory_order_acquire) != target) {
-                __builtin_ia32_pause();
+                GOW3_CPU_PAUSE();
             }
             wait_cycles += __rdtsc() - start;
         }
@@ -94,7 +94,7 @@ private:
             const auto spin_until = std::chrono::steady_clock::now() + std::chrono::microseconds(100);
             u64 now = posted.load(std::memory_order_acquire);
             for (u32 spins = 1; now == seen; ++spins) {
-                __builtin_ia32_pause();
+                GOW3_CPU_PAUSE();
                 if (!(spins & 255) && std::chrono::steady_clock::now() >= spin_until) {
                     sleeping.store(true, std::memory_order_seq_cst);
                     posted.wait(seen, std::memory_order_seq_cst);

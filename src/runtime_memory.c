@@ -855,7 +855,11 @@ void *runtime_low_map(size_t size, int prot) {
  * Read many times per draw (Gow3Toggle::Disabled): alone on its cache line. Next to the memory
  * counters (queries is bumped by every guest VirtualQuery) each read could miss the cache. */
 struct toggle_line { uint64_t value; unsigned char pad[56]; };
+#ifdef __APPLE__ /* Mach-O symbols carry a leading underscore */
+__attribute__((aligned(64))) struct toggle_line runtime_toggle_line __asm__("_runtime_disabled_optimizations");
+#else
 __attribute__((aligned(64))) struct toggle_line runtime_toggle_line __asm__("runtime_disabled_optimizations");
+#endif
 #define runtime_disabled_optimizations (runtime_toggle_line.value)
 /* Speculative readers of guest memory (GPU draw-preparation workers) register a recovery
  * point: a fault on that thread jumps back to it instead of terminating (probe.c). */

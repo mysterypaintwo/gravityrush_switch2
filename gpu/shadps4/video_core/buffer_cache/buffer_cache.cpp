@@ -71,9 +71,16 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         LOG_INFO(Render_Vulkan, "Buffer arenas of {} MiB (driver buffer limit {} MiB)",
                  arena_page_size >> 20, instance.GetMaxBufferSize() >> 20);
     }
+    // gow3: without sparse resident buffers (MoltenVK) every arena is backed in full.
+    g_dense_arenas = !instance.IsSparseBufferSupported();
+    if (g_dense_arenas) {
+        LOG_WARNING(Render_Vulkan, "No sparse resident buffers: buffer arenas of {} MiB are allocated in full",
+                    arena_page_size >> 20);
+    }
     const vk::BufferCreateInfo probe_ci = {
-        .flags =
-            vk::BufferCreateFlagBits::eSparseBinding | vk::BufferCreateFlagBits::eSparseResidency,
+        .flags = g_dense_arenas ? vk::BufferCreateFlags{}
+                                : vk::BufferCreateFlagBits::eSparseBinding |
+                                      vk::BufferCreateFlagBits::eSparseResidency,
         .size = arena_page_size,
         .usage = ARENA_USAGE,
         .sharingMode = vk::SharingMode::eExclusive,
@@ -443,8 +450,14 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     const u64 total_size = first_size + last_size;
     const u64 end_block = (first_addr + total_size) >> block_shift;
     auto* new_arena = &arenas.emplace_back(instance, first_addr, total_size, MemoryType::Sparse);
-    auto* bind = BindsForArena(new_arena);
+    if (g_dense_arenas) {
+        MigrateDenseArena(new_arena, first_arena, last_arena, base_block, end_block);
+    }
+    auto* bind = g_dense_arenas ? nullptr : BindsForArena(new_arena);
     resident_ranges.ForEachInRange(base_block, end_block, [&](const Backing& backing) {
+        if (!bind) {
+            return;
+        }
         const u64 start = std::max(base_block, backing.start);
         const u64 end = std::min(end_block, backing.end);
         bind->binds.push_back(vk::SparseMemoryBind{
@@ -478,6 +491,29 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         return;
     }
     Gow3Stats::Timer timer{Gow3Stats::t_resident};
+
+    if (g_dense_arenas) {
+        // gow3: the arena is backed in full; only the BDA page table learns the blocks.
+        const auto staging =
+            staging_pool.Request(resident_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
+        auto* bda_addrs = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
+        boost::container::small_vector<vk::BufferCopy, 8> copies;
+        u64 offset = staging.offset;
+        for (const auto& range : bind_ranges) {
+            resident_ranges.Add(Backing{{range.start, range.end}, vk::DeviceMemory{}, range.start});
+            const u64 resource_offset = (range.start << block_shift) - arena->cpu_addr;
+            for (u64 block = range.start; block < range.end; ++block) {
+                *(bda_addrs++) = arena->BufferDeviceAddress() + resource_offset +
+                                 ((block - range.start) << block_shift);
+            }
+            const u64 copy_size = (range.end - range.start) * sizeof(vk::DeviceAddress);
+            copies.emplace_back(offset, range.start * sizeof(vk::DeviceAddress), copy_size);
+            offset += copy_size;
+        }
+        staging.Flush();
+        runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
+        return;
+    }
 
     const vk::MemoryAllocateInfo alloc_info = {
         .allocationSize = resident_blocks << block_shift,
@@ -521,6 +557,53 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
 
     staging.Flush();
     runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
+}
+
+// gow3: dense arenas (no sparse buffers): a buffer request spanning two arena pages gets a new
+// arena over both. Sparse arenas rebind the same memory; dense ones copy the resident blocks
+// from the old arenas and point the BDA page table at the new one.
+void BufferCache::MigrateDenseArena(const Buffer* new_arena, const Buffer* first_arena,
+                                    const Buffer* last_arena, u64 base_block, u64 end_block) {
+    const u64 split_block = first_arena ? (first_arena->cpu_addr + first_arena->size_bytes) >> block_shift
+                                        : end_block;
+    boost::container::small_vector<vk::BufferCopy, 8> from_first, from_last, table;
+    u64 table_blocks = 0;
+    resident_ranges.ForEachInRange(base_block, end_block, [&](const Backing& backing) {
+        const u64 start = std::max(base_block, backing.start);
+        const u64 end = std::min(end_block, backing.end);
+        table_blocks += end - start;
+        const auto add = [&](const Buffer* src, auto& list, u64 a, u64 b) {
+            if (src && a < b) {
+                list.emplace_back((a << block_shift) - src->cpu_addr, (a << block_shift) - new_arena->cpu_addr,
+                                  (b - a) << block_shift);
+            }
+        };
+        add(first_arena, from_first, start, std::min(end, split_block));
+        add(last_arena, from_last, std::max(start, split_block), end);
+    });
+    if (!from_first.empty()) {
+        runtime.CopyBuffer(first_arena, new_arena, from_first);
+    }
+    if (!from_last.empty()) {
+        runtime.CopyBuffer(last_arena, new_arena, from_last);
+    }
+    if (!table_blocks) {
+        return;
+    }
+    const auto staging = staging_pool.Request(table_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
+    auto* bda_addrs = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
+    u64 offset = staging.offset;
+    resident_ranges.ForEachInRange(base_block, end_block, [&](const Backing& backing) {
+        const u64 start = std::max(base_block, backing.start);
+        const u64 end = std::min(end_block, backing.end);
+        for (u64 block = start; block < end; ++block) {
+            *(bda_addrs++) = new_arena->BufferDeviceAddress() + (block << block_shift) - new_arena->cpu_addr;
+        }
+        table.emplace_back(offset, start * sizeof(vk::DeviceAddress), (end - start) * sizeof(vk::DeviceAddress));
+        offset += (end - start) * sizeof(vk::DeviceAddress);
+    });
+    staging.Flush();
+    runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), table);
 }
 
 bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size,

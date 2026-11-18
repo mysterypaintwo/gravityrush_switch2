@@ -224,6 +224,13 @@ extern "C" int gow3gpu_init(const Gow3GpuConfig* config) {
     Core::Emulator::FillElfInfo(*config);
     const std::string title = config->title ? config->title : "Gravity Rush";
     const s32 width = config->width, height = config->height;
+#ifdef __APPLE__
+    // gow3: Cocoa windows and their events belong to the main thread, so the window is created
+    // here and the host program runs the game on another thread while the main thread calls
+    // gow3gpu_main_loop (switch2/host).
+    g_window = new Frontend::WindowSDL(width, height, title.c_str());
+    g_window_ready = true;
+#else
     g_window_thread = std::thread([title, width, height] {
         Common::SetCurrentThreadName("gow3:window");
         auto* window = new Frontend::WindowSDL(width, height, title.c_str());
@@ -245,11 +252,21 @@ extern "C" int gow3gpu_init(const Gow3GpuConfig* config) {
         std::unique_lock lock{g_window_mutex};
         g_window_cv.wait(lock, [] { return g_window_ready; });
     }
+#endif
     Core::Loader::SymbolsResolver resolver;
     // GnmDriver creates the presenter that the VideoOut present thread uses.
     Libraries::GnmDriver::RegisterLib(&resolver);
     Libraries::VideoOut::RegisterLib(&resolver);
     return 0;
+}
+
+extern "C" void gow3gpu_main_loop(void) {
+    while (g_window && g_window->PollEvents()) {
+        SDL_Delay(2);
+    }
+    LOG_INFO(Frontend, "Window closed by user");
+    std::fflush(stdout);
+    std::_Exit(0);
 }
 
 namespace Libraries::Kernel { void StartKernelService(); }

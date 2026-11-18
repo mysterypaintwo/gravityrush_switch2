@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "gow3_arch.h"
 #include <thread>
 #include <algorithm>
 #include <cstdio>
@@ -387,7 +388,7 @@ void Scheduler::RecorderThread(std::stop_token stoken) {
             Gow3Threads::Available() >= 12 ? 200 : 20);
         const auto spin_until = std::chrono::steady_clock::now() + spin_time;
         for (u32 spins = 1; queued_chunks.load(std::memory_order_acquire) == 0; ++spins) {
-            __builtin_ia32_pause();
+            GOW3_CPU_PAUSE();
             // The clock is read every 256 pauses, not per iteration.
             if (!(spins & 255) &&
                 (stoken.stop_requested() || std::chrono::steady_clock::now() >= spin_until)) {

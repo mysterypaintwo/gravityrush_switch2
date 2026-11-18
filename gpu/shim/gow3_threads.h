@@ -31,6 +31,17 @@ inline unsigned Available() {
 inline void MakeBackground() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
 }
+#elif defined(__APPLE__)
+
+/// Hardware threads available to the process (macOS has no affinity masks).
+inline unsigned Available() {
+    return std::max(1u, std::thread::hardware_concurrency());
+}
+
+/// The calling thread only runs when cores are otherwise idle (background QoS).
+inline void MakeBackground() {
+    setpriority(PRIO_DARWIN_THREAD, 0, PRIO_DARWIN_BG);
+}
 #else
 
 /// Hardware threads available to the process.

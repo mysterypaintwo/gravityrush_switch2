@@ -20,7 +20,7 @@
 #include <cstring>
 #include <memory>
 #include <thread>
-#include <x86intrin.h>
+#include "gow3_arch.h"
 
 #include "common/assert.h"
 #include "common/thread.h"
@@ -113,7 +113,7 @@ public:
         const u64 start = __rdtsc();
         for (u32 spins = 0; consumed.load(std::memory_order_acquire) != head; ++spins) {
             if (spins < 4096) {
-                __builtin_ia32_pause();
+                GOW3_CPU_PAUSE();
             } else {
                 std::this_thread::yield();
             }
@@ -153,7 +153,7 @@ private:
 
     void WaitForSpace(u64 at, u64 size) {
         while (at + size - consumed.load(std::memory_order_acquire) > Capacity) {
-            __builtin_ia32_pause();
+            GOW3_CPU_PAUSE();
         }
     }
 
@@ -181,7 +181,7 @@ private:
                     if (stop.stop_requested()) {
                         return;
                     }
-                    __builtin_ia32_pause();
+                    GOW3_CPU_PAUSE();
                     if (!(spins & 255) && std::chrono::steady_clock::now() >= spin_until) {
                         const u32 seen = wake.load(std::memory_order_seq_cst);
                         sleeping.store(true, std::memory_order_seq_cst);

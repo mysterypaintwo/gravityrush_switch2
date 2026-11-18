@@ -84,6 +84,9 @@ void UniqueBuffer::Destroy() {
 void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
                           VmaAllocationInfo* out_alloc_info) {
     const bool with_bda = bool(buffer_ci.usage & vk::BufferUsageFlagBits::eShaderDeviceAddress);
+    if (mem_type == MemoryType::Sparse && g_dense_arenas) {
+        mem_type = MemoryType::DeviceLocal; // gow3: a dense arena
+    }
     if (mem_type != MemoryType::Sparse) {
         const VmaAllocationCreateFlags bda_flag =
             with_bda ? VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT : 0;
@@ -140,7 +143,7 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
         Vulkan::SetObjectName(device, Handle(), "Buffer {:#x}:{:#x}", cpu_addr, size_bytes);
     }
 
-    if (mem_type != MemoryType::Sparse) {
+    if (mem_type != MemoryType::Sparse || g_dense_arenas) {
         VkMemoryPropertyFlags property_flags{};
         vmaGetAllocationMemoryProperties(instance.GetAllocator(), buffer.allocation,
                                          &property_flags);

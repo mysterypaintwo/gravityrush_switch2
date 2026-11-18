@@ -118,7 +118,10 @@ private:
         boost::container::small_vector<vk::SparseMemoryBind, 32> binds;
     };
 
-    ArenaBinds* BindsForArena(const Buffer* arena) {
+    void MigrateDenseArena(const Buffer* new_arena, const Buffer* first_arena, const Buffer* last_arena,
+                           u64 base_block, u64 end_block);
+
+        ArenaBinds* BindsForArena(const Buffer* arena) {
         auto it = std::ranges::find(pending_binds, arena, &ArenaBinds::arena);
         if (it != pending_binds.end()) {
             return std::addressof(*it);

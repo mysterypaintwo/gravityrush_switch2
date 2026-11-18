@@ -268,7 +268,11 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
         _NSGetExecutablePath(path, &length);
         return std::filesystem::path(path).parent_path();
     }();
-    setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
+    // gow3: only when a MoltenVK manifest ships next to the executable (an app bundle); a
+    // development build uses the system's (Homebrew) drivers.
+    if (!std::getenv("VK_DRIVER_FILES") && std::filesystem::exists(icd_path / "MoltenVK_icd.json")) {
+        setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
+    }
 #endif
 
     static vk::detail::DynamicLoader dl;
@@ -288,6 +292,10 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
 
     const auto layers = GetInstanceLayers(enable_validation, enable_crash_diagnostic);
     auto extensions = GetLayerExtensions(GetInstanceExtensions(window_type, true), layers);
+#ifdef __APPLE__
+    // gow3: MoltenVK is a portability driver; the loader only lists it when asked to.
+    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
     // gow3: DLSS (optional bridge DLL) needs its own instance extensions.
     if (Dlss* dlss = Dlss::Get()) {
         dlss->AppendInstanceExtensions(extensions);
@@ -406,6 +414,9 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
 
     vk::StructureChain<vk::InstanceCreateInfo, vk::LayerSettingsCreateInfoEXT> instance_ci_chain = {
         vk::InstanceCreateInfo{
+#ifdef __APPLE__
+            .flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
+#endif
             .pApplicationInfo = &application_info,
             .enabledLayerCount = static_cast<u32>(layers.size()),
             .ppEnabledLayerNames = layers.data(),

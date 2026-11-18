@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "gow3_guest_call.h"
 #include "font_internal.h"
 
 #include <array>
@@ -837,7 +838,7 @@ void RemoveLibState(Libraries::Font::OrbisFontLib lib) {
         if (free_fn) {
             const auto free_fn_guest =
                 reinterpret_cast<void(PS4_SYSV_ABI*)(void* object, void* p)>(free_fn);
-            free_fn_guest(alloc_ctx, p);
+            Gow3GuestCall(free_fn_guest, alloc_ctx, p);
             return;
         }
         std::free(p);

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "gow3_guest_call.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -87,21 +88,21 @@ public:
 private:
     static u8* Allocate(const AvPlayerMemAllocator& memory_replacement, u32 align, u32 size) {
         return reinterpret_cast<u8*>(
-            memory_replacement.allocate(memory_replacement.object_ptr, align, size));
+            Gow3GuestCall(memory_replacement.allocate, memory_replacement.object_ptr, align, size));
     }
 
     static void Deallocate(const AvPlayerMemAllocator& memory_replacement, void* ptr) {
-        memory_replacement.deallocate(memory_replacement.object_ptr, ptr);
+        Gow3GuestCall(memory_replacement.deallocate, memory_replacement.object_ptr, ptr);
     }
 
     static u8* AllocateTexture(const AvPlayerMemAllocator& memory_replacement, u32 align,
                                u32 size) {
         return reinterpret_cast<u8*>(
-            memory_replacement.allocate_texture(memory_replacement.object_ptr, align, size));
+            Gow3GuestCall(memory_replacement.allocate_texture, memory_replacement.object_ptr, align, size));
     }
 
     static void DeallocateTexture(const AvPlayerMemAllocator& memory_replacement, void* ptr) {
-        memory_replacement.deallocate_texture(memory_replacement.object_ptr, ptr);
+        Gow3GuestCall(memory_replacement.deallocate_texture, memory_replacement.object_ptr, ptr);
     }
 
     const AvPlayerMemAllocator& m_memory_replacement;

@@ -54,6 +54,11 @@ public:
     }
 
     /// Largest VkBuffer the driver allows (2 GiB on AMD's Windows driver).
+    /// gow3: sparse resident buffers (the buffer cache's arenas). MoltenVK has none.
+    bool IsSparseBufferSupported() const {
+        return features.sparseBinding && features.sparseResidencyBuffer;
+    }
+
     u64 GetMaxBufferSize() const {
         return vk13_props.maxBufferSize;
     }
