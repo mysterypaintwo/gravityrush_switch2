@@ -27,6 +27,7 @@
 #include <vk_mem_alloc.h>
 
 namespace VideoCore {
+std::atomic<u64> g_gow3_largest_request{};
 
 static constexpr size_t GDS_BUFFER_SIZE = 64_KB;
 static constexpr size_t STREAM_BUFFER_SIZE = 128_MB;
@@ -66,7 +67,16 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         --arena_page_bits;
     }
 #ifdef __SWITCH__
-    arena_page_bits = MIN_ARENA_PAGE_BITS;
+    // 32 MiB by default: 8 MiB used the least memory but 1080p gameplay flickered (vertices
+    // skewed every frame), which 64 MiB did not; 64 MiB ran out of memory at gameplay.
+    arena_page_bits = 25;
+    if (const char* mb = std::getenv("GOW3_ARENA_MB")) {
+        const u64 want = std::strtoull(mb, nullptr, 10);
+        for (u64 bits = MIN_ARENA_PAGE_BITS; bits <= 26; ++bits) {
+            if ((u64{1} << bits) == (want << 20)) arena_page_bits = bits;
+        }
+    }
+    std::printf("GPU: buffer arenas of %llu MiB\n", (unsigned long long)((u64{1} << arena_page_bits) >> 20));
 #endif
     arena_page_size = u64{1} << arena_page_bits;
     num_arena_pages = u64{1} << (ADDRESS_SPACE_BITS - arena_page_bits);
@@ -215,6 +225,13 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     if (total_size_bytes == 0) {
         return;
     }
+    if (arena->imported) {
+        // gow3: the arena is the game's memory: the GPU's writes are already there once its
+        // work is done.
+        scheduler.Finish();
+        memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
+        return;
+    }
     const auto download = staging_pool.Request(total_size_bytes, VideoCore::MemoryType::HostCached);
     for (auto& copy : copies) {
         copy.dstOffset += download.offset;
@@ -349,6 +366,11 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         stream_buffer.Commit();
         return {&stream_buffer, offset};
     }
+    // gow3: the largest buffer the game binds (could the arenas be smaller? A request must fit
+    // in two of them), in the "gpu memory:" report.
+    for (u64 seen = g_gow3_largest_request.load(std::memory_order_relaxed);
+         size > seen && !g_gow3_largest_request.compare_exchange_weak(seen, size);) {
+    }
     const u64 first_block = device_addr >> block_shift;
     const u64 last_block = (device_addr + size - 1) >> block_shift;
     const auto* arena = GetArena(first_block, last_block);
@@ -440,7 +462,7 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
             const auto* new_arena =
                 &arenas.emplace_back(instance, base_block << block_shift,
                                      num_pages << arena_page_bits, MemoryType::Sparse);
-            if (g_dense_arenas) {
+            if (g_dense_arenas && !new_arena->imported) {
                 g_gow3_arena_bytes.fetch_add(num_pages << arena_page_bits, std::memory_order_relaxed);
                 g_gow3_arena_count.fetch_add(1, std::memory_order_relaxed);
             }
@@ -461,7 +483,7 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     const u64 end_block = (first_addr + total_size) >> block_shift;
     auto* new_arena = &arenas.emplace_back(instance, first_addr, total_size, MemoryType::Sparse);
     if (g_dense_arenas) {
-        g_gow3_arena_bytes.fetch_add(total_size, std::memory_order_relaxed);
+        if (!new_arena->imported) g_gow3_arena_bytes.fetch_add(total_size, std::memory_order_relaxed);
         g_gow3_arena_count.fetch_add(1, std::memory_order_relaxed);
         MigrateDenseArena(new_arena, first_arena, last_arena, base_block, end_block);
     }
@@ -593,10 +615,11 @@ void BufferCache::MigrateDenseArena(const Buffer* new_arena, const Buffer* first
         add(first_arena, from_first, start, std::min(end, split_block));
         add(last_arena, from_last, std::max(start, split_block), end);
     });
-    if (!from_first.empty()) {
+    // gow3: an arena on the game's memory already holds the bytes (see Buffer::imported).
+    if (!from_first.empty() && !new_arena->imported) {
         runtime.CopyBuffer(first_arena, new_arena, from_first);
     }
-    if (!from_last.empty()) {
+    if (!from_last.empty() && !new_arena->imported) {
         runtime.CopyBuffer(last_arena, new_arena, from_last);
     }
     if (!table_blocks) {
@@ -626,10 +649,17 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
     memory_tracker->ForEachUploadRange(
         device_addr, size, is_written,
         [&](u64 addr, u64 size) {
+            if (arena->imported) {
+                return; // gow3: the GPU reads the game's bytes in place (Buffer::imported)
+            }
             copies.emplace_back(total_size_bytes, addr, size);
             total_size_bytes += size;
         },
-        [&] { src_buffer = UploadCopies(arena, copies, total_size_bytes); });
+        [&] {
+            if (!arena->imported) {
+                src_buffer = UploadCopies(arena, copies, total_size_bytes);
+            }
+        });
 
     if (src_buffer) {
         runtime.CopyBuffer(src_buffer, arena, copies);

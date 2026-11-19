@@ -43,9 +43,11 @@ class BufferCache {
     static constexpr u64 MAX_ARENA_PAGE_BITS = 32;
 #ifdef __SWITCH__
     // gow3 (Switch 2): no sparse buffers, so every arena is backed in full, from the same memory
-    // as everything else (the driver allocates GPU memory with malloc). 64 MiB arenas back only
-    // the guest ranges the game's buffers use; arenas a buffer straddles are merged.
-    static constexpr u64 MIN_ARENA_PAGE_BITS = 26;
+    // as everything else (the driver allocates GPU memory with malloc). Small arenas back only
+    // the guest ranges the game's buffers use; arenas a buffer straddles are merged. 32 MiB by
+    // default (buffer_cache.cpp), GOW3_ARENA_MB=8, 16 or 64 (the largest buffer the game binds
+    // is ~2 MiB; a request may span two arenas). This is the smallest size allowed.
+    static constexpr u64 MIN_ARENA_PAGE_BITS = 23;
 #else
     static constexpr u64 MIN_ARENA_PAGE_BITS = 30;
 #endif

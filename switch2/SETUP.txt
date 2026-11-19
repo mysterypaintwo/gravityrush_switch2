@@ -55,9 +55,13 @@ switch/gravityrush_remastered/user/; back that folder up to keep them.
 Settings are in switch/gravityrush_remastered/options.ini, written on the first start, and in
 the in-game menu (hold ZL and click the right stick; tap it or use the D-pad and buttons):
   language=ENG    ENG, FRA, DEU, ITA, ESP, POR, RUS, POL, NLD or JPN
-  swap_ab=0       1: A confirms (the PS4's cross) and B cancels; 0: by position (B confirms)
+  swap_ab=1       1: menus confirm with A and cancel with B (Switch style); 0: menus confirm with B.
+                  Gameplay buttons are by position either way
   gyro=on         off: the game gets no motion sensor data (tilting the console no longer aims the camera)
-All three apply the next time the game starts. The folder is not the
+  resolution_handheld=1080p, resolution_docked=1080p
+                  the game's render size in each mode (1080p, 972p, 864p or 720p; lower is faster),
+                  chosen by the console's mode when the game starts
+All of them apply the next time the game starts. The folder is not the
 one the Gravity Rush (PS Vita) port uses (switch/gravityrush/), so both can be installed.
 
 
@@ -67,3 +71,8 @@ Homebrew menu icon: prepare_sd.sh (or prepare_sd.ps1) puts your game's own icon
 (game/sce_sys/icon0.png) into the NRO it copies to the SD card. It needs devkitPro's elf2nro, and on
 macOS sips (built in), elsewhere ImageMagick or Python's Pillow. Without them the NRO is copied
 without an icon. The icon is never part of the repository or the build.
+
+Some ways into HEN start the homebrew menu as a program without "system resource" memory
+(boot.txt: "running as program ..., system resource 0 KiB"). The game's memory then comes from the
+heap instead (boot.txt: "no system resource: the game's memory is the heap's top"). If the
+game still stops at once with "cannot map guest memory below 64 GiB", send boot.txt and log.txt.

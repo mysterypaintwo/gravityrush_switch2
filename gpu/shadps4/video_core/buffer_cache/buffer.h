@@ -58,7 +58,8 @@ struct UniqueBuffer {
         : device{other.device}, buffer{std::exchange(other.buffer, VK_NULL_HANDLE)},
           bda_addr{std::exchange(other.bda_addr, 0)},
           allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
-          allocation{std::exchange(other.allocation, VK_NULL_HANDLE)} {}
+          allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
+          imported_memory{std::exchange(other.imported_memory, VK_NULL_HANDLE)} {}
 
     UniqueBuffer& operator=(UniqueBuffer&& other) noexcept {
         if (this != &other) {
@@ -68,12 +69,18 @@ struct UniqueBuffer {
             bda_addr = std::exchange(other.bda_addr, 0);
             allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
             allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
+            imported_memory = std::exchange(other.imported_memory, VK_NULL_HANDLE);
         }
         return *this;
     }
 
     void Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
                 VmaAllocationInfo* out_alloc_info);
+
+    /// gow3: the buffer on host memory the caller keeps mapped (VK_EXT_external_memory_host);
+    /// false (nothing created) when the driver refuses it.
+    bool CreateImported(const Vulkan::Instance& instance, vk::BufferCreateInfo& buffer_ci,
+                        void* host_pointer);
 
     void Destroy();
 
@@ -82,6 +89,7 @@ struct UniqueBuffer {
     vk::DeviceAddress bda_addr{};
     VmaAllocator allocator;
     VmaAllocation allocation{};
+    vk::DeviceMemory imported_memory{};
 };
 
 struct Buffer {
@@ -130,6 +138,9 @@ struct Buffer {
     std::span<u8> mapped_data{};
     bool is_coherent{};
     MemoryType mem_type{MemoryType::DeviceLocal};
+    /// gow3: a dense arena on the game's own memory (Switch 2): the GPU and the game share its
+    /// bytes, so nothing is uploaded to it or downloaded from it (BufferCache).
+    bool imported{};
     UniqueBuffer buffer;
 };
 

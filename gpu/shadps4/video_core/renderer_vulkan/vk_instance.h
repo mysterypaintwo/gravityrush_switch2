@@ -162,6 +162,11 @@ public:
         return shader_stencil_export;
     }
 
+    /// gow3: VK_EXT_external_memory_host (Switch 2: arenas import guest memory)
+    bool IsExternalMemoryHostSupported() const {
+        return external_memory_host;
+    }
+
     /// Returns true when VK_EXT_depth_clip_control is supported
     bool IsDepthClipControlSupported() const {
         return depth_clip_control;
@@ -555,6 +560,7 @@ private:
     bool fragment_shader_barycentric{};
     bool amd_shader_explicit_vertex_parameter{};
     bool depth_clip_control{};
+    bool external_memory_host{};
     bool depth_clip_enable{};
     bool dynamic_state_3{};
     bool depth_range_unrestricted{};

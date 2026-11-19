@@ -91,7 +91,12 @@ static ABI int32_t system_param(int32_t id,int32_t *value) {
 #endif
     case 5: *value=0; break;                    /* summer time */
     case 7: *value=0; break;                    /* parental level off */
-    case 1000: *value=menu_circle_confirm() ? 0 : 1; break; /* enter button: 0 circle, 1 cross */
+    case 1000: { /* enter button: 0 circle, 1 cross */
+        *value=menu_circle_confirm() ? 0 : 1;
+        static int told;
+        if (!told++) printf("Runtime: the game asked which button confirms: %s\n",*value ? "cross" : "circle");
+        break;
+    }
     default: fprintf(stderr,"STOP: unsupported system parameter %d\n",id); exit(21);
     }
     return 0;

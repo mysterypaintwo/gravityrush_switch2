@@ -3154,7 +3154,8 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     }
 
     // Gravity Rush's shadow cascades are drawn with a 2048x2048 viewport; with "Shadow Quality -
-    // 4096" the map is larger and the passes into it (no color target) are scaled to its size.
+    // 4096" the map is larger (and with GOW3_SHADOW=1024 smaller) and the passes into it (no
+    // color target) are scaled to its size.
     bool has_color = false;
     for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
         has_color |= bool(state.color_attachments[cb].image_view);
@@ -3162,7 +3163,8 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     if (db_desc.first && !has_color && target_scale[0] == 1.0f) {
         const auto& depth_info = texture_cache.GetImage(db_desc.first).info;
         const float game_width = 2.0f * std::abs(regs.viewports[0].xscale);
-        if (depth_info.size.width == depth_info.size.height && depth_info.size.width >= 2048 &&
+        // gow3: 1024 too (Switch 2: GOW3_SHADOW=1024, half-size map, the passes scaled down).
+        if (depth_info.size.width == depth_info.size.height && depth_info.size.width >= 1024 &&
             game_width >= 1024.0f && float(depth_info.size.width) != game_width) {
             const float scale = float(depth_info.size.width) / game_width;
             target_scale = {scale, scale};

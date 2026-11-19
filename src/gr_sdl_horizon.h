@@ -158,8 +158,12 @@ static inline void sdl_horizon_stick(const HidAnalogStickState* s, int index, in
     if (r > reach[index]) reach[index] = r < 32767.0f ? r : 32767.0f;
     float scale = 32767.0f / reach[index];
     if (r * scale > 32767.0f) scale = 32767.0f / r;
-    *x = (int32_t)(fx * scale);
-    *y = (int32_t)(fy * scale);
+    /* GOW3_STICK_SWAP=1 (a test in the start menu): X and Y swapped, for a console that reports
+     * them that way round (a tester's movement log, 2026-11-19: up read as right). */
+    static int swap = -1;
+    if (swap < 0) { const char* e = getenv("GOW3_STICK_SWAP"); swap = e && e[0] == '1'; }
+    *x = (int32_t)((swap ? fy : fx) * scale);
+    *y = (int32_t)((swap ? fx : fy) * scale);
 }
 
 static inline int16_t SDL_GetGamepadAxis(SDL_Gamepad* g, SDL_GamepadAxis a)

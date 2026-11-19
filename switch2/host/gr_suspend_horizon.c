@@ -29,6 +29,10 @@
 
 #include "box64e.h"
 
+/* Booting: HOME and sleep do not freeze the game yet (see gr_suspend_boot_done). */
+static atomic_bool booting = true;
+static atomic_bool freeze_pending;
+
 extern volatile uint64_t runtime_suspended_ticks;
 int runtime_savedata_busy(void); /* src/runtime_savedata.c */
 
@@ -429,9 +433,25 @@ static void on_applet_message(AppletHookType hook, void* param)
     switch (hook) {
     case AppletHookType_OnFocusState:
     case AppletHookType_OnResume:
-        if (appletGetFocusState() == AppletFocusState_Background) freeze();
-        else if (appletGetFocusState() == AppletFocusState_InFocus) thaw();
+        if (appletGetFocusState() == AppletFocusState_Background) {
+            if (atomic_load(&booting)) {
+                if (!atomic_exchange(&freeze_pending, true)) gr_crumb("HOME or sleep during the boot: the game keeps running until it is over");
+            } else {
+                freeze();
+            }
+        } else if (appletGetFocusState() == AppletFocusState_InFocus) {
+            atomic_store(&freeze_pending, false);
+            thaw();
+        }
         break;
+    case AppletHookType_OnOperationMode: {
+        /* Docked or handheld: the render size was chosen at launch (gr_switch.c); it follows
+         * the new mode when the game is launched again. */
+        const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+        gr_crumb(docked ? "the console is now docked (the render size changes at the next launch)"
+                        : "the console is now handheld (the render size changes at the next launch)");
+        break;
+    }
     default:
         break;
     }
@@ -440,36 +460,15 @@ static void on_applet_message(AppletHookType hook, void* param)
 static AppletHookCookie hook_cookie;
 
 /* During the boot (until the game has shown ~10 s of frames: gr_suspend_boot_done, from
- * gpu/shim/gow3_overlay.cpp) HOME and sleep wait: suspending then could end the whole homebrew
- * session (the GPU and the game's threads are still being set up). HOME is blocked outright;
- * sleep waits on a sleep lock, as an official game holds one while it saves. */
-static atomic_bool boot_guard;
-static bool sleep_locked;
-static void begin_boot_guard(void)
-{
-    const Result home = appletBeginBlockingHomeButton(0);
-    if (R_SUCCEEDED(home)) atomic_store(&boot_guard, true);
-    char line[120];
-    snprintf(line, sizeof line, "boot guard: HOME blocked (%#x)", home);
-    gr_crumb(line);
-}
-static void* acquire_sleep_lock(void* arg)
-{
-    (void)arg;
-    /* It waits for the lock's event, so on its own thread: the boot never waits for it. */
-    const Result r = appletRequestToAcquireSleepLock();
-    sleep_locked = R_SUCCEEDED(r);
-    char line[120];
-    snprintf(line, sizeof line, "boot guard: sleep lock %s (%#x)", sleep_locked ? "held" : "not held", r);
-    gr_crumb(line);
-    return NULL;
-}
+ * gpu/shim/gow3_overlay.cpp, or 2 minutes at most) a HOME press or sleep does not freeze the game:
+ * freezing it then ended the whole homebrew session. HOME and sleep themselves are never blocked
+ * or delayed (a blocked HOME button or a held sleep lock hung the console): the game just keeps
+ * running in the background, and freezes as soon as the boot is over if it is still out of focus. */
 void gr_suspend_boot_done(void)
 {
-    if (!atomic_exchange(&boot_guard, false)) return;
-    appletEndBlockingHomeButton();
-    if (sleep_locked) { appletReleaseSleepLock(); sleep_locked = false; }
-    gr_crumb("boot guard: over, HOME and sleep allowed");
+    if (!atomic_exchange(&booting, false)) return;
+    gr_crumb(atomic_load(&freeze_pending) ? "boot over: freezing now (HOME or sleep during the boot)"
+                                          : "boot over: HOME and sleep freeze the game");
 }
 
 void gr_suspend_init(void)
@@ -481,11 +480,6 @@ void gr_suspend_init(void)
     appletSetFocusHandlingMode(AppletFocusHandlingMode_NoSuspend);
     appletSetRestartMessageEnabled(true);
     appletHook(&hook_cookie, on_applet_message, NULL);
-    if (!getenv("GR_NO_BOOT_GUARD")) {
-        begin_boot_guard();
-        pthread_t t;
-        if (!pthread_create(&t, NULL, acquire_sleep_lock, NULL)) pthread_detach(t);
-    }
 }
 
 void gr_suspend_add_listener(GrSuspendFn fn)
@@ -808,6 +802,11 @@ void gr_suspend_run_applet_loop(void)
     while (!atomic_load(&exit_requested) && appletMainLoop()) {
         if (!atomic_load(&frozen)) reap_finished();
         static unsigned tick;
+        /* The boot is over at most 2 minutes in, whatever the frame count says. */
+        if (atomic_load(&booting) && tick >= 12000) gr_suspend_boot_done();
+        if (!atomic_load(&booting) && atomic_exchange(&freeze_pending, false) &&
+            appletGetFocusState() == AppletFocusState_Background)
+            freeze();
         if (!atomic_load(&frozen) && ++tick % 20 == 0) sample_threads();
         /* Bring-up: proof of life every 250 ms in boot.txt (GR_HEARTBEAT=1). */
         static int heartbeat = -1;

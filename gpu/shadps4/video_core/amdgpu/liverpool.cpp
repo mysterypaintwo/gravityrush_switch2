@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <pthread.h>
 #ifndef _WIN32
@@ -26,6 +27,7 @@
 #include "core/memory.h"
 #include "core/platform.h"
 #include "video_core/amdgpu/liverpool.h"
+#include "gow3_threads.h"
 #include "gow3_write_log.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderdoc.h"
@@ -107,6 +109,14 @@ void Liverpool::ProcessCommands() {
 
 void Liverpool::Process(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuCommandProcessor");
+#ifdef __SWITCH__
+    // gow3 (Switch 2): GOW3_GPU_PRIORITY=high (a test in the start menu): above the game's
+    // threads (0x2c). On slow frames this thread took a median 115 ms of wall time for ~350
+    // draws; at high priority the frame rate did not improve (2026-11-19), so it is a test only.
+    if (const char* p = std::getenv("GOW3_GPU_PRIORITY"); p && !std::strcmp(p, "high")) {
+        Gow3Threads::MakeForeground();
+    }
+#endif
     Gow3Sampler::SampleCurrentThread("GpuCmd");
 #ifndef _WIN32
     if (clockid_t clock; pthread_getcpuclockid(pthread_self(), &clock) == 0) {

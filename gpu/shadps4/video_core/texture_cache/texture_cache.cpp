@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <cstdio>
+#include <mutex>
+#include <unordered_set>
 
 #include <unordered_map>
 #include <xxhash.h>
@@ -7,6 +10,7 @@
 
 #include "gow3_toggles.h"
 #include "gow3_settings.h"
+#include "gow3_button_art.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
@@ -1296,6 +1300,44 @@ void TextureCache::RefreshImage(Image& image) {
         image.hash = hash;
     }
 
+#ifdef __SWITCH__
+    // gow3 (Switch 2): PS4 button pictures (the pause menu's L1/R1 tabs) become the Switch's
+    // buttons, in guest memory before the upload (gpu/shim/gow3_button_art.cpp).
+    if (False(image.flags & ImageFlagBits::GpuModified) &&
+        Gow3ButtonArt::Candidate(image.info.size.width, image.info.size.height,
+                                 image.info.guest_size)) {
+        auto* bytes = std::bit_cast<u8*>(image.info.guest_address);
+        if (Gow3ButtonArt::RewriteImage(bytes, image.info.guest_size, image.info.size.width,
+                                        image.info.size.height,
+                                        XXH3_64bits(bytes, image.info.guest_size))) {
+            image.hash = XXH3_64bits(bytes, image.info.guest_size);
+        }
+    }
+    // gow3 (Switch 2) GOW3_TEXTURE_DUMP=1 (a test in the start menu): each distinct small game
+    // texture's bytes as they are in guest memory, once, to texdump/ next to the NRO, to find the
+    // pre-rendered PS4 button art (the pause menu's L1/R1 tabs are not drawn with the prompt font).
+    if (static const bool dump = std::getenv("GOW3_TEXTURE_DUMP") != nullptr;
+        dump && False(image.flags & ImageFlagBits::GpuModified) && image.info.size.width <= 1024 &&
+        image.info.size.height <= 1024 && image.info.guest_size <= (4u << 20)) {
+        static std::mutex dump_mutex;
+        static std::unordered_set<u64> dumped;
+        const auto* bytes = std::bit_cast<const u8*>(image.info.guest_address);
+        const u64 key = XXH3_64bits(bytes, image.info.guest_size);
+        std::scoped_lock dump_lock{dump_mutex};
+        if (dumped.size() < 3000 && dumped.insert(key).second) {
+            char path[256];
+            std::snprintf(path, sizeof(path),
+                          "sdmc:/switch/gravityrush_remastered/texdump/%016llx_%ux%u_f%d_%s_m%u.bin",
+                          (unsigned long long)key, image.info.size.width, image.info.size.height,
+                          int(image.info.pixel_format), image.info.IsTiled() ? "tiled" : "linear",
+                          image.info.resources.levels);
+            if (std::FILE* out = std::fopen(path, "wb")) {
+                std::fwrite(bytes, 1, image.info.guest_size, out);
+                std::fclose(out);
+            }
+        }
+    }
+#endif
     const u32 num_layers = image.info.resources.layers;
     const u32 num_mips = image.info.resources.levels;
     const bool is_gpu_modified = True(image.flags & ImageFlagBits::GpuModified);

@@ -49,7 +49,7 @@ target_compile_options(atrac9 PRIVATE -w)
 add_executable(gr_host
     gr_host.c gr_fiber_arm64.c gr_ctx_arm64.S $<$<NOT:$<BOOL:${GR_HOST_GPU}>>:gpu_none.c>
     $<$<PLATFORM_ID:Darwin>:host_compat_macos.c>
-    $<$<BOOL:${NINTENDO_SWITCH}>:gr_switch.c gr_suspend_horizon.c gr_heap_horizon.c host_compat_horizon.c>
+    $<$<BOOL:${NINTENDO_SWITCH}>:gr_switch.c gr_suspend_horizon.c gr_heap_horizon.c gr_resolution.c gr_physmem_horizon.c host_compat_horizon.c>
     ${RUNTIME_SOURCES})
 target_include_directories(gr_host PRIVATE "${PORT_ROOT}" "${PORT_ROOT}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(gr_host PRIVATE GR_ARM64 GR_FIBER_HOST)

@@ -645,13 +645,15 @@ static void fake_motion(PadData *d) {
 #define PROBE_CAVE 0x15e7900u  /* the code segment ends at 0x15e785c, its page at 0x15e8000 */
 #define PROBE_SLOT 0x23b7700u  /* the data segment ends at 0x23b7668, its page at 0x23b8000 */
 #define PROBE_INPUT 0x1ed53b0u
+#define GRAVITY_ENTRY 0x926b0u
+#define GRAVITY_CAVE (PROBE_CAVE+0x40)
 static unsigned char *probe_image;
 void runtime_camera_probe_install(unsigned char *image, size_t size) {
     static const unsigned char entry[6]={0x55,0x48,0x89,0xe5,0x41,0x57}; /* push rbp; mov rbp,rsp; push r15 */
     const char *e=getenv("GOW3_MOVE_LOG");
     if (e && !strcmp(e,"0")) return;
     if (size<PROBE_SLOT+16 || memcmp(image+PROBE_ENTRY,entry,6)) { puts("Move: camera probe not installed (another build of the game)"); return; }
-    for (unsigned i=0;i<64;++i) if (image[PROBE_CAVE+i] || (i<16 && image[PROBE_SLOT+i])) { puts("Move: camera probe not installed (no free space)"); return; }
+    for (unsigned i=0;i<0x60;++i) if (image[PROBE_CAVE+i] || (i<16 && image[PROBE_SLOT+i])) { puts("Move: camera probe not installed (no free space)"); return; }
     unsigned char *c=image+PROBE_CAVE;
     int32_t rel;
     c[0]=0x48; c[1]=0x89; c[2]=0x3d; rel=(int32_t)(PROBE_SLOT-(PROBE_CAVE+7)); memcpy(c+3,&rel,4);      /* mov [slot], rdi */
@@ -660,17 +662,67 @@ void runtime_camera_probe_install(unsigned char *image, size_t size) {
     c[20]=0xe9; rel=(int32_t)(PROBE_RESUME-(PROBE_CAVE+25)); memcpy(c+21,&rel,4);                       /* jmp back */
     unsigned char *at=image+PROBE_ENTRY;
     at[0]=0xe9; rel=(int32_t)(PROBE_CAVE-(PROBE_ENTRY+5)); memcpy(at+1,&rel,4); at[5]=0x90;
+    /* The gravity-shift camera (0x926b0, while Kat floats): its runs only (slot+12), so
+     * runtime_pad_gameplay() knows a gameplay camera is in use in the air too. */
+    static const unsigned char gravity_entry[6]={0x55,0x48,0x89,0xe5,0x41,0x56}; /* push rbp; mov rbp,rsp; push r14 */
+    if (!memcmp(image+GRAVITY_ENTRY,gravity_entry,6)) {
+        unsigned char *g=image+GRAVITY_CAVE;
+        g[0]=0xf0; g[1]=0xff; g[2]=0x05; rel=(int32_t)(PROBE_SLOT+12-(GRAVITY_CAVE+7)); memcpy(g+3,&rel,4); /* lock inc dword [slot+12] */
+        memcpy(g+7,gravity_entry,6);
+        g[13]=0xe9; rel=(int32_t)(GRAVITY_ENTRY+6-(GRAVITY_CAVE+18)); memcpy(g+14,&rel,4);
+        unsigned char *ga=image+GRAVITY_ENTRY;
+        ga[0]=0xe9; rel=(int32_t)(GRAVITY_CAVE-(GRAVITY_ENTRY+5)); memcpy(ga+1,&rel,4); ga[5]=0x90;
+    }
     probe_image=image;
     puts("Move: camera probe installed");
+}
+/* A gameplay camera (on the ground or floating) ran in the last 300 ms: menus, pauses and
+ * cut-scenes have neither. Called at each pad sample. */
+static int gameplay_now;
+static void update_gameplay(void) {
+    static uint32_t last_ground, last_gravity;
+    static uint64_t last_seen;
+    if (!probe_image) { gameplay_now=1; return; }
+    uint32_t ground, gravity;
+    memcpy(&ground,probe_image+PROBE_SLOT+8,4);
+    memcpy(&gravity,probe_image+PROBE_SLOT+12,4);
+    const uint64_t now=now_us();
+    if (ground!=last_ground || gravity!=last_gravity) last_seen=now;
+    last_ground=ground; last_gravity=gravity;
+    gameplay_now=last_seen && now-last_seen<300000;
+}
+int runtime_pad_gameplay(void) { return gameplay_now; }
+/* GOW3_MENU_SWAP=1 (options.ini swap_ab=1): outside gameplay the Switch's A sends the PS4's cross
+ * (the European release's confirm) and B its circle, so menus confirm with A; in gameplay every
+ * button stays by position (B is cross: jump). The prompts follow (gow3_button_glyphs.cpp). */
+int runtime_pad_menu_swapped(void) {
+    static int on=-1;
+    if (on<0) { const char *e=getenv("GOW3_MENU_SWAP"); on=e && e[0]=='1'; }
+    return on && !gameplay_now;
 }
 static void move_log(const PadData *d) {
     static uint64_t next;
     static uint32_t last_runs;
+    static int fast=-1;
+    if (fast<0) { const char *e=getenv("GOW3_MOVE_LOG"); fast=e && !strcmp(e,"fast"); }
     if (!probe_image) return;
     const uint64_t now=now_us();
+    /* Each change of the buttons sent (fast log): whether jump (cross) reaches the game. */
+    static uint32_t last_buttons;
+    if (fast && d->buttons!=last_buttons) {
+        printf("Move: buttons 0x%x%s%s%s%s%s\n",d->buttons,d->buttons & BTN_CROSS ? " cross" : "",d->buttons & BTN_CIRCLE ? " circle" : "",
+               d->buttons & BTN_SQUARE ? " square" : "",d->buttons & BTN_TRIANGLE ? " triangle" : "",gameplay_now ? "" : " (not gameplay)");
+        last_buttons=d->buttons;
+    }
     if (now<next) return;
     if (abs(d->left_x-128)<24 && abs(d->left_y-128)<24 && abs(d->right_x-128)<24 && abs(d->right_y-128)<24) return;
-    next=now+500000;
+    next=now+(fast ? 100000 : 500000);
+#ifdef __SWITCH__
+    /* The console's own stick readings, before any scaling (src/gr_sdl_horizon.h). */
+    if (fast) printf("Move: raw L %d,%d R %d,%d style 0x%llx%s\n",(int)sdl_horizon_pad.sticks[0].x,(int)sdl_horizon_pad.sticks[0].y,
+                     (int)sdl_horizon_pad.sticks[1].x,(int)sdl_horizon_pad.sticks[1].y,(unsigned long long)sdl_horizon_pad.style,
+                     gameplay_now ? "" : " (not gameplay)");
+#endif
     const float *in=(const float *)(probe_image+PROBE_INPUT+0x3b0);
     char camera[220]="camera: not in use";
     uint32_t runs; memcpy(&runs,probe_image+PROBE_SLOT+8,4);
@@ -687,6 +739,35 @@ static void move_log(const PadData *d) {
            d->left_x,d->left_y,d->right_x,d->right_y,d->orientation[0],d->orientation[1],d->orientation[2],d->orientation[3],
            d->angular_velocity[0],d->angular_velocity[1],d->angular_velocity[2],
            in[0],in[1],in[2],in[3],in[4],in[5],in[6],in[7],camera);
+}
+/* The movement tests (GOW3_MOVE_LOG=fast): one line on screen (gpu/shim/gow3_overlay.cpp) with
+ * the left stick as the console reads it and as the game gets it, and the buttons sent, so a
+ * push can be checked against the thumb while playing. */
+static PadData shown_sample;
+static int shown_valid;
+static const char *stick_way(double x, double y) {
+    static const char *const names[8]={"right","up-right","up","up-left","left","down-left","down","down-right"};
+    if (sqrt(x*x+y*y)<0.25) return "centre";
+    const double deg=atan2(y,x)*57.29578;
+    return names[((int)floor((deg+360.0+22.5)/45.0))%8];
+}
+int runtime_pad_stick_text(char *out, size_t size) {
+    static int on=-1;
+    if (on<0) { const char *e=getenv("GOW3_MOVE_LOG"); on=e && !strcmp(e,"fast"); }
+    if (!on || !shown_valid) return 0;
+    PadData d;
+    pthread_mutex_lock(&lock); d=shown_sample; pthread_mutex_unlock(&lock);
+    char raw[96]="";
+#ifdef __SWITCH__
+    const HidAnalogStickState r=sdl_horizon_pad.sticks[0];
+    snprintf(raw,sizeof raw,"Stick read: %s (%d, %d)\n",stick_way(r.x/32767.0,r.y/32767.0),(int)r.x,(int)r.y);
+#endif
+    snprintf(out,size,"%sGame gets: %s (%d, %d)%s\nButtons: %s%s%s%s%s",raw,
+             stick_way((d.left_x-128)/127.0,(128-d.left_y)/127.0),d.left_x,d.left_y,gameplay_now ? "" : " (not gameplay)",
+             d.buttons & BTN_CROSS ? "cross " : "",d.buttons & BTN_CIRCLE ? "circle " : "",
+             d.buttons & BTN_SQUARE ? "square " : "",d.buttons & BTN_TRIANGLE ? "triangle " : "",
+             d.buttons & (BTN_CROSS|BTN_CIRCLE|BTN_SQUARE|BTN_TRIANGLE) ? "" : "none");
+    return 1;
 }
 static void sample(PadData *d) {
     sample_host(d);
@@ -707,7 +788,13 @@ static void sample(PadData *d) {
         else hold_after_capture=0;
     }
     assign_touch_ids(d);
+    update_gameplay();
+    if (runtime_pad_menu_swapped()) {
+        const uint32_t cross=d->buttons & BTN_CROSS, circle=d->buttons & BTN_CIRCLE;
+        d->buttons=(d->buttons & ~(uint32_t)(BTN_CROSS|BTN_CIRCLE)) | (cross ? BTN_CIRCLE : 0) | (circle ? BTN_CROSS : 0);
+    }
     move_log(d);
+    shown_sample=*d; shown_valid=1;
 }
 
 static ABI int32_t pad_init(void) {

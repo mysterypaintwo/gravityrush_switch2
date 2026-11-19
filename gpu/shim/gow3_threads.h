@@ -48,6 +48,11 @@ inline unsigned Available() {
 inline void MakeBackground() {
     svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3b);
 }
+
+/// The calling thread runs ahead of the game's threads (Horizon priority 0x2a).
+inline void MakeForeground() {
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2a);
+}
 #elif defined(__APPLE__)
 
 /// Hardware threads available to the process (macOS has no affinity masks).

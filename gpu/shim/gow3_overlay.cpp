@@ -488,9 +488,10 @@ void OverlayTab() {
             InfoRow("Language now", text);
         }
 #ifdef __SWITCH__
-        CheckRow("Swap A and B (next launch)", Gow3Settings::Get().swap_ab,
-                 "On: A is the PS4's cross (confirm) and B its circle, in the game and its prompts. "
-                 "Off: by position (B cross, A circle). Takes effect when the game is launched again.");
+        CheckRow("Confirm with A (next launch)", Gow3Settings::Get().swap_ab,
+                 "On: menus confirm with A and cancel with B, as on the Switch. Off: menus confirm "
+                 "with B (the PS4's cross). Gameplay buttons stay by position. Takes effect when "
+                 "the game is launched again.");
         CheckRow("Motion controls (next launch)", Gow3Settings::Get().gyro,
                  "On: tilting the console aims the camera, as the PS4 controller's motion sensor did. "
                  "Off: the game sees the controller lying still. Takes effect when the game is launched again.");
@@ -722,11 +723,17 @@ const char* TestLabel() {
     }
 }
 
+extern "C" int runtime_pad_stick_text(char* out, size_t size) __attribute__((weak));
+
 void FpsCounter() {
     const auto& s = Gow3Settings::Get();
     std::string text = s.show_fps ? OverlayText() : std::string{};
     if (const char* label = TestLabel()) {
         text = std::string(label) + (text.empty() ? "" : "\n") + text;
+    }
+    // The movement tests: the stick and buttons, live (src/runtime_pad.c).
+    if (char stick[256]; runtime_pad_stick_text && runtime_pad_stick_text(stick, sizeof stick)) {
+        text = std::string(stick) + (text.empty() ? "" : "\n") + text;
     }
     if (text.empty()) {
         return;
@@ -1186,10 +1193,10 @@ bool QuitDue() {
 void LogPresent() {
     const unsigned shown = presents.fetch_add(1, std::memory_order_relaxed) + 1;
 #ifdef __SWITCH__
-    // The boot is over (as for the menu: ~10 s of frames, not on a loading screen): HOME and
-    // sleep are allowed again (switch2/host/gr_suspend_horizon.c).
+    // The boot is over (as for the menu: ~10 s of frames, not on a loading screen; 30 s of
+    // frames at most): HOME and sleep freeze the game again (switch2/host/gr_suspend_horizon.c).
     static bool booted = false;
-    if (!booted && shown >= 600 && !loading) {
+    if (!booted && ((shown >= 600 && !loading) || shown >= 1800)) {
         booted = true;
         if (gr_suspend_boot_done) gr_suspend_boot_done();
     }

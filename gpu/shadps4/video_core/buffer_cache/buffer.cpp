@@ -11,6 +11,12 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #include <vk_mem_alloc.h>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#ifdef __SWITCH__
+#include "horizon/gow3_switch.h"
+#endif
 
 namespace VideoCore {
 
@@ -76,6 +82,10 @@ void UniqueBuffer::Destroy() {
     } else if (buffer) {
         device.destroyBuffer(buffer);
     }
+    if (imported_memory) {
+        device.freeMemory(imported_memory);
+        imported_memory = VK_NULL_HANDLE;
+    }
     buffer = VK_NULL_HANDLE;
     allocation = VK_NULL_HANDLE;
     bda_addr = 0;
@@ -123,6 +133,94 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
     }
 }
 
+bool UniqueBuffer::CreateImported(const Vulkan::Instance& instance, vk::BufferCreateInfo& buffer_ci,
+                                  void* host_pointer) {
+    const bool with_bda = bool(buffer_ci.usage & vk::BufferUsageFlagBits::eShaderDeviceAddress);
+    const vk::ExternalMemoryBufferCreateInfo external_ci = {
+        .handleTypes = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+    };
+    vk::BufferCreateInfo ci = buffer_ci;
+    ci.pNext = &external_ci;
+    const auto created = device.createBuffer(ci);
+    if (created.result != vk::Result::eSuccess) {
+        return false;
+    }
+    const vk::Buffer candidate = created.value;
+    const auto reqs = device.getBufferMemoryRequirements(candidate);
+    const auto host_props = device.getMemoryHostPointerPropertiesEXT(
+        vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT, host_pointer);
+    const u32 types = host_props.result == vk::Result::eSuccess
+                          ? host_props.value.memoryTypeBits & reqs.memoryTypeBits
+                          : 0;
+    const auto mem_props = instance.GetPhysicalDevice().getMemoryProperties();
+    u32 type_index = ~0u;
+    for (u32 i = 0; i < mem_props.memoryTypeCount; ++i) {
+        if (!(types & (1u << i))) continue;
+        const auto flags = mem_props.memoryTypes[i].propertyFlags;
+        if (type_index == ~0u ||
+            (flags & vk::MemoryPropertyFlagBits::eHostCoherent &&
+             !(mem_props.memoryTypes[type_index].propertyFlags & vk::MemoryPropertyFlagBits::eHostCoherent))) {
+            type_index = i;
+        }
+    }
+    vk::DeviceMemory memory{};
+    if (type_index != ~0u && reqs.size <= buffer_ci.size) {
+        const vk::MemoryAllocateFlagsInfo flags_info = {
+            .flags = with_bda ? vk::MemoryAllocateFlagBits::eDeviceAddress : vk::MemoryAllocateFlags{},
+        };
+        const vk::ImportMemoryHostPointerInfoEXT import_info = {
+            .pNext = &flags_info,
+            .handleType = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+            .pHostPointer = host_pointer,
+        };
+        const vk::MemoryAllocateInfo alloc_info = {
+            .pNext = &import_info,
+            .allocationSize = buffer_ci.size,
+            .memoryTypeIndex = type_index,
+        };
+        const auto allocated = device.allocateMemory(alloc_info);
+        if (allocated.result == vk::Result::eSuccess) {
+            memory = allocated.value;
+        }
+    }
+    if (!memory || device.bindBufferMemory(candidate, memory, 0) != vk::Result::eSuccess) {
+        if (memory) device.freeMemory(memory);
+        device.destroyBuffer(candidate);
+        return false;
+    }
+    buffer = candidate;
+    imported_memory = memory;
+    if (with_bda) {
+        bda_addr = device.getBufferAddress(vk::BufferDeviceAddressInfo{.buffer = buffer});
+    }
+    return true;
+}
+
+namespace {
+// gow3: whether [address, address + size) is all mapped read/write host memory (an arena over
+// guest memory the game has not mapped is allocated as before).
+bool HostRangeMapped(VAddr address, u64 size) {
+#ifdef __SWITCH__
+    for (VAddr at = address; at < address + size;) {
+        MemoryInfo info{};
+        u32 page_info = 0;
+        if (R_FAILED(svcQueryMemory(&info, &page_info, at)) || info.type == MemType_Unmapped ||
+            (info.perm & Perm_Rw) != Perm_Rw || info.addr + info.size <= at) {
+            return false;
+        }
+        at = info.addr + info.size;
+    }
+    return true;
+#else
+    (void)address;
+    (void)size;
+    return false;
+#endif
+}
+} // namespace
+
+std::atomic<u64> g_gow3_imported_arena_bytes{};
+
 Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,
                MemoryType mem_type_, std::string_view debug_name)
     : cpu_addr{cpu_addr_}, size_bytes{size_bytes_}, mem_type{mem_type_},
@@ -134,6 +232,28 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
         .sharingMode = vk::SharingMode::eExclusive,
     };
     VmaAllocationInfo alloc_info{};
+    // gow3: GOW3_IMPORT_ARENAS=1: a dense arena over guest memory the game has mapped uses those
+    // bytes directly. Off by default: on the Switch 2 it halved the GPU memory but the frame rate
+    // too (sharing makes the pages slow for the CPU: the game and the GPU thread read them).
+    static const bool import_arenas = [] {
+        const char* env = std::getenv("GOW3_IMPORT_ARENAS");
+        return env && env[0] == '1';
+    }();
+    if (mem_type == MemoryType::Sparse && g_dense_arenas && import_arenas && cpu_addr &&
+        instance.IsExternalMemoryHostSupported() && HostRangeMapped(cpu_addr, size_bytes) &&
+        buffer.CreateImported(instance, buffer_ci, reinterpret_cast<void*>(cpu_addr))) {
+        imported = true;
+        g_gow3_imported_arena_bytes.fetch_add(size_bytes, std::memory_order_relaxed);
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true)) {
+            std::printf("GPU: buffer arenas use the game's memory directly (first at %#llx)\n",
+                        (unsigned long long)cpu_addr);
+        }
+        const auto device = instance.GetDevice();
+        Vulkan::SetObjectName(device, Handle(), "Arena {:#x}:{:#x} (game memory)", cpu_addr, size_bytes);
+        is_coherent = true;
+        return;
+    }
     buffer.Create(buffer_ci, mem_type, &alloc_info);
 
     const auto device = instance.GetDevice();

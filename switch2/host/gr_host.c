@@ -585,6 +585,9 @@ int main(int argc, char **argv) {
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
     runtime_camera_probe_install(image, size);
+#ifdef __SWITCH__
+    { void gr_resolution_install(unsigned char*, size_t); gr_resolution_install(image, size); }
+#endif
 
     /* --- guest memory rights. Box64 reads the x86 code, so the host pages only need R/W; the
      * dynarec translates only what is marked executable. */

@@ -38,6 +38,11 @@ inline constexpr Language Languages[] = {
     {"ESP", "Spanish", 3},  {"POR", "Portuguese", 7}, {"RUS", "Russian", 8}, {"POL", "Polish", 16},
     {"NLD", "Dutch", 6},    {"JPN", "Japanese", 0},
 };
+/// Switch 2 render sizes (switch2/host/gr_resolution.c).
+inline const char* SwitchResolutionKey(int index) {
+    static const char* const keys[] = {"1080p", "972p", "864p", "720p"};
+    return keys[index >= 0 && index < 4 ? index : 0];
+}
 inline const char* LanguageKey(int code) {
     for (const auto& l : Languages) {
         if (l.code == code) return l.key;
@@ -67,12 +72,16 @@ struct Values {
     /// The game's language for the next launch (a PS4 language code; 18 English: this copy is the
     /// European release). The running game keeps the one it started with (GOW3_LANGUAGE).
     std::atomic<int> language{18};
-    /// Switch 2: A is the PS4's cross (confirm) and B its circle, prompts too (next launch; off:
-    /// by position, B cross and A circle).
-    std::atomic<bool> swap_ab{false};
+    /// Switch 2: menus confirm with A and cancel with B (the game is told circle confirms; next
+    /// launch). Off: menus confirm with B (cross). Gameplay buttons are by position either way.
+    std::atomic<bool> swap_ab{true};
     /// Switch 2: the motion sensors reach the game (next launch; off: the controller reads as
     /// lying still, GOW3_GYRO=0).
     std::atomic<bool> gyro{true};
+    /// Switch 2: the game's render size in handheld and in docked mode (SwitchResolutionKey;
+    /// chosen at launch by the console's mode, switch2/host/gr_switch.c).
+    std::atomic<int> resolution_handheld{0}; // 1080p (864p crashed once, 2026-11-19: being checked)
+    std::atomic<int> resolution_docked{0};   // 1080p
     // Graphics (gow3_graphics.h). Live: applied on the next frame.
     std::atomic<int> display_mode{1}; // borderless by default
     /// Exclusive fullscreen refresh rate in Hz; 0 keeps the desktop's.

@@ -23,7 +23,7 @@ enum : FT_ULong {
     kL = 0xE0E4, kR = 0xE0E5, kZL = 0xE0E6, kZR = 0xE0E7,
     kDpadUp = 0xE0EB, kDpadDown = 0xE0EC, kDpadLeft = 0xE0ED, kDpadRight = 0xE0EE,
     kPlus = 0xE0EF, kMinus = 0xE0F0,
-    kLStick = 0xE0C1, kRStick = 0xE0C2, kLStickPress = 0xE0C4,
+    kLStick = 0xE0C1, kRStick = 0xE0C2, kLStickPress = 0xE0C4, kRStickPress = 0xE0C5,
 };
 
 struct Mapping {
@@ -37,7 +37,7 @@ struct Mapping {
 constexpr Mapping kPositional[] = {
     {'h', kB}, {'e', kA}, {'g', kY}, {'f', kX},           // ✕ ○ □ △
     {'i', kL}, {'j', kR}, {'A', kZL}, {'B', kZR},         // L1 R1 L2 R2
-    {'k', kLStick}, {'l', kRStick}, {'C', kLStickPress},  // L stick, R stick, L3
+    {'k', kLStick}, {'l', kRStick}, {'C', kLStickPress}, {'D', kRStickPress}, // sticks, L3, R3
     {'m', kMinus}, {'n', kPlus},                          // SHARE, OPTIONS
     {'o', kDpadUp}, {'p', kDpadDown}, {'q', kDpadLeft}, {'r', kDpadRight},
 };
@@ -50,14 +50,11 @@ bool LabelsSwapped() {
     return swapped;
 }
 
-// GOW3_BUTTON_LABELS=swap_ab (Switch 2, options.ini swap_ab=1): A is the cross and B the circle,
-// as the console's input mapping then reads them (src/gr_sdl_horizon.h); X and Y stay.
+// Switch 2: outside gameplay A confirms (the European release's cross) and B cancels
+// (src/runtime_pad.c, options.ini swap_ab=1), so the cross and circle prompts show A and B there.
+extern "C" int runtime_pad_menu_swapped(void) __attribute__((weak));
 bool AbSwapped() {
-    static const bool swapped = [] {
-        const char* env = std::getenv("GOW3_BUTTON_LABELS");
-        return env && !std::strcmp(env, "swap_ab");
-    }();
-    return swapped;
+    return runtime_pad_menu_swapped && runtime_pad_menu_swapped();
 }
 
 FT_ULong MapCode(FT_ULong code) {
@@ -203,6 +200,15 @@ FT_UInt GlyphIndex(FT_Face& face, FT_ULong code) {
     }
     NoteFace(face, code);
     if (code < 0x80 && IsGaijiFace(face)) {
+        if (!MapCode(code)) {
+            // Bring-up: prompt-font characters without a Switch button yet (the shoulder
+            // buttons on the pause menu were still PS4), once each.
+            static std::atomic<bool> noted[128]{};
+            if (!noted[code & 127].exchange(true)) {
+                std::printf("Button glyphs: prompt character '%c' (0x%02lx) has no Switch button\n",
+                            code >= 0x20 ? char(code) : '?', (unsigned long)code);
+            }
+        }
         if (const FT_ULong button = MapCode(code)) {
             if (FT_Face ext = ExtFaceFor(face->glyph->library)) {
                 if (const FT_UInt gi = FT_Get_Char_Index(ext, button)) {

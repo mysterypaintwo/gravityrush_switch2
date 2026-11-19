@@ -303,6 +303,10 @@ void runtime_memory_set_layout(uint64_t low_min, uint64_t user_min, uint64_t use
  * allocates 4466 of the 5056 MiB and maps no flexible memory, and what it leaves goes to the
  * host heap (switch2/host/gr_switch.c). Pages stay mapped until exit (host_discard zeroes them
  * in place). */
+/* svcMapPhysicalMemory / svcUnmapPhysicalMemory, or heap mirrors when the process has no system
+ * resource (switch2/host/gr_physmem_horizon.c). */
+Result gr_map_physical(void *address, size_t size);
+Result gr_unmap_physical(void *address, size_t size);
 static uint64_t committed[(UINT64_C(8) << 30)/PAGE/64]; /* POOL_SIZE+FLEX_SPAN pages */
 static uint64_t committed_bytes;
 static int committed_test(uint64_t page) { return (int)((committed[page/64]>>(page%64))&1); }
@@ -313,7 +317,7 @@ static int commit(uint64_t phys, uint64_t size) {
         if (committed_test(p)) { ++p; continue; }
         uint64_t q=p;
         while (q<last && !committed_test(q)) ++q;
-        const Result rc=svcMapPhysicalMemory(backing_base+p*PAGE,(q-p)*PAGE);
+        const Result rc=gr_map_physical(backing_base+p*PAGE,(q-p)*PAGE);
         if (R_FAILED(rc)) {
             fprintf(stderr,"Runtime: guest memory map of %" PRIu64 " MiB at phys 0x%" PRIx64 " failed (0x%x); %" PRIu64 " MiB mapped\n",
                     ((q-p)*PAGE)>>20,p*PAGE,rc,committed_bytes>>20);
@@ -345,7 +349,7 @@ void runtime_memory_release(void) {
             if (!committed_test(p)) { ++p; continue; }
             uint64_t q=p;
             while (q<pages && committed_test(q)) ++q;
-            if (R_FAILED(svcUnmapPhysicalMemory(backing_base+p*PAGE,(q-p)*PAGE))) ++failed;
+            if (R_FAILED(gr_unmap_physical(backing_base+p*PAGE,(q-p)*PAGE))) ++failed;
             p=q;
         }
         if (failed) fprintf(stderr,"Runtime: %u guest memory unmaps failed\n",failed);
@@ -950,7 +954,7 @@ void runtime_low_release(void) {
         uintptr_t end=info.addr+info.size;
         if (end>low_next) end=low_next;
         if ((info.type&0xff)!=MemType_Unmapped && end>start) {
-            const Result rc=svcUnmapPhysicalMemory((void *)start,end-start);
+            const Result rc=gr_unmap_physical((void *)start,end-start);
             if (R_FAILED(rc)) {
                 if (failed++<8) fprintf(stderr,"Runtime: low memory unmap at 0x%" PRIxPTR " (%" PRIuPTR " KiB, type 0x%x, attr 0x%x) failed (0x%x)\n",
                                         start,(end-start)>>10,info.type,info.attr,rc);
@@ -958,7 +962,8 @@ void runtime_low_release(void) {
         }
         at=end;
     }
-    printf("Runtime: low memory released (%u blocks, %u failed)\n",unmapped,failed);
+    printf("Runtime: low memory released (%u blocks, %u failed, %" PRIuPTR " MiB used)\n",unmapped,failed,
+           low_next ? (low_next-(uintptr_t)LOW_MIN)>>20 : (uintptr_t)0);
     low_next=0;
 }
 #endif
@@ -970,7 +975,7 @@ void *runtime_low_map(size_t size, int prot) {
     if (!low_next) low_next=LOW_MIN;
     void *p=NULL;
     if (low_next && low_next+size<=LOW_MAX) {
-        const Result rc=svcMapPhysicalMemory((void *)low_next,size);
+        const Result rc=gr_map_physical((void *)low_next,size);
         if (R_SUCCEEDED(rc)) { p=(void *)low_next; low_next+=size+PAGE; }
         else fprintf(stderr,"Runtime: low memory map of %zu KiB failed (0x%x)\n",size>>10,rc);
     }
