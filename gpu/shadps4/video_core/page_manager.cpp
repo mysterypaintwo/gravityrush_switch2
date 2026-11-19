@@ -15,6 +15,13 @@
 #include "video_core/page_manager.h"
 #include "video_core/page_state.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#ifdef __SWITCH__
+#include <algorithm>
+#include <cstdlib>
+#include <map>
+#include <unordered_map>
+#include <unordered_set>
+#endif
 
 #ifndef _WIN64
 #include <sys/mman.h>
@@ -39,17 +46,33 @@
 #else
 #include "common/spin_lock.h"
 #endif
+#ifdef __SWITCH__
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+#include <xxhash.h>
+#include "gow3_copy.h"
+extern "C" int runtime_memory_is_mapped(uintptr_t address, uint64_t size); // runtime_memory.c
+#endif
 
 namespace VideoCore {
 
-constexpr size_t PM_PAGE_SIZE = 4_KB;
-constexpr size_t PM_PAGE_BITS = 12;
+constexpr size_t PM_PAGE_SIZE = TRACKER_BYTES_PER_PAGE; // gow3: host protection page
+constexpr size_t PM_PAGE_BITS = TRACKER_PAGE_BITS;
 
 struct PageManager::Impl {
     using PageState = VideoCore::PageState;
 
+#ifdef __SWITCH__
+    // gow3 (Switch 2): a 39-bit address space; one state per 16K page is 64 MiB instead of 128.
+    static constexpr size_t ADDRESS_BITS = 39;
+#else
     static constexpr size_t ADDRESS_BITS = 40;
-    static constexpr size_t NUM_ADDRESS_PAGES = 1ULL << (40 - PM_PAGE_BITS);
+#endif
+    static constexpr size_t NUM_ADDRESS_PAGES = 1ULL << (ADDRESS_BITS - PM_PAGE_BITS);
     static constexpr size_t NUM_ADDRESS_LOCKS = NUM_ADDRESS_PAGES / PAGES_PER_LOCK;
     inline static Vulkan::Rasterizer* rasterizer;
 
@@ -66,6 +89,9 @@ struct PageManager::Impl {
 
     virtual void Protect(VAddr address, size_t size, Core::MemoryPermission perms) = 0;
 
+    /// Guest writes the host could not see as faults (Switch 2), handled before a submission.
+    virtual void CheckGuestWrites() {}
+
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
         const auto addr = reinterpret_cast<VAddr>(fault_address);
         // gow3: the draw recording thread handles its faults inline too (vk_draw_pipe.h).
@@ -75,7 +101,22 @@ struct PageManager::Impl {
         }
         if (Common::IsWriteError(context)) {
             Gow3Stats::Timer timer{Gow3Stats::t_write_faults};
-            return rasterizer->OnWriteFault(addr, is_gpu_thread);
+            const bool handled = rasterizer->OnWriteFault(addr, is_gpu_thread);
+            // gow3: a write that keeps faulting on the same page (the handler does not make it
+            // writable) hangs its thread; report it once.
+            thread_local VAddr last_page = 0;
+            thread_local u64 repeats = 0;
+            if ((addr >> PM_PAGE_BITS) == last_page) {
+                if (++repeats == 100000) {
+                    std::fprintf(stderr, "PageManager: write fault at 0x%llx repeats (handled %d, GPU mapped %d)\n",
+                                 (unsigned long long)addr, int(handled),
+                                 int(rasterizer->IsMapped(addr, 8)));
+                }
+            } else {
+                last_page = addr >> PM_PAGE_BITS;
+                repeats = 0;
+            }
+            return handled;
         } else {
             Gow3Stats::read_faults.fetch_add(1, std::memory_order_relaxed);
             Gow3Stats::Timer timer{Gow3Stats::t_read_faults};
@@ -390,7 +431,184 @@ struct SignalImpl : public PageManager::Impl {
 
 };
 
+#ifdef __SWITCH__
+// gow3 (Switch 2): Horizon never delivers a fault to the process (switch2/PLAN.md), so a page
+// is never really write-protected. A page the trackers want to watch for CPU writes keeps a
+// hash of its contents instead, and before each submission (Liverpool::SubmitGfx/SubmitAsc,
+// on the submitting guest thread, as a fault handler would run) every watched page is hashed
+// again: a page that changed is handled as a write fault on it would have been
+// (Rasterizer::InvalidateMemory), which also ends the watch. Writes are seen at the next
+// submission, which is when the GPU could first use them.
+// Read watches (readbacks of GPU-written data when the CPU reads it) cannot be emulated: they
+// are counted and the CPU reads the memory as it is.
+struct HashImpl : public PageManager::Impl {
+    HashImpl(Vulkan::Rasterizer* rasterizer_) : Impl() {
+        rasterizer = rasterizer_;
+        std::printf("GPU: memory tracking by page hashes before each submission (no faults on Horizon)\n");
+    }
+
+    static u64 HashPage(VAddr page_addr) {
+        return XXH3_64bits(reinterpret_cast<const void*>(page_addr), PM_PAGE_SIZE);
+    }
+
+    void Protect(VAddr address, size_t size, Core::MemoryPermission perms) override {
+        const VAddr first = address >> PM_PAGE_BITS, end = (address + size + PM_PAGE_SIZE - 1) >> PM_PAGE_BITS;
+        if (!True(perms & Core::MemoryPermission::Read)) {
+            read_watches.fetch_add(end - first, std::memory_order_relaxed);
+        }
+        const bool watch = !True(perms & Core::MemoryPermission::Write);
+        // Hashed outside the lock; a page that is not mapped is not watched (reading it would
+        // end the process).
+        thread_local std::vector<std::pair<u64, u64>> hashed;
+        hashed.clear();
+        if (watch && runtime_memory_is_mapped(first << PM_PAGE_BITS, (end - first) << PM_PAGE_BITS)) {
+            for (VAddr page = first; page < end; ++page) {
+                hashed.emplace_back(page, HashPage(page << PM_PAGE_BITS));
+            }
+        }
+        std::scoped_lock lock{watch_mutex};
+        if (watch) {
+            for (const auto& [page, hash] : hashed) {
+                watched[page] = hash;
+                if (changed_before.contains(page)) {
+                    hot[page] = hash;
+                }
+            }
+        } else {
+            for (VAddr page = first; page < end; ++page) {
+                watched.erase(page);
+                hot.erase(page);
+            }
+        }
+    }
+
+    // Each check hashes every "hot" page (one that changed before: data the game rewrites) and
+    // the next budget's worth of the other watched pages, round-robin, so a write to a page the
+    // game rarely touches is seen within a few submissions instead of hashing everything each
+    // time (226 MiB: 20 ms per submission). GOW3_HASH_BUDGET_MIB (default 8; 0: everything).
+    static size_t BudgetPages() {
+        static const size_t pages = [] {
+            const char* v = std::getenv("GOW3_HASH_BUDGET_MIB");
+            const long mib = v ? std::atol(v) : 8;
+            return mib <= 0 ? SIZE_MAX : size_t(mib) * 1048576 / PM_PAGE_SIZE;
+        }();
+        return pages;
+    }
+
+    void CheckGuestWrites() override {
+        std::scoped_lock scan_lock{scan_mutex};
+        const auto begin = std::chrono::steady_clock::now();
+        size_t watched_now = 0;
+        {
+            std::scoped_lock lock{watch_mutex};
+            watched_now = watched.size();
+            pages.clear();
+            for (const auto& entry : hot) {
+                pages.push_back(entry);
+            }
+            const size_t budget = std::min(BudgetPages(), watched.size());
+            auto it = watched.lower_bound(cursor);
+            for (size_t n = 0; n < budget; ++n) {
+                if (it == watched.end()) {
+                    it = watched.begin();
+                }
+                if (!hot.contains(it->first)) {
+                    pages.push_back(*it);
+                }
+                ++it;
+            }
+            cursor = it == watched.end() ? 0 : it->first;
+        }
+        std::sort(pages.begin(), pages.end());
+        pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+        changed.assign(pages.size(), 0);
+        // Runs of contiguous pages, each checked as mapped once, hashed in parallel chunks.
+        constexpr size_t Chunk = 256;
+        const size_t chunks = (pages.size() + Chunk - 1) / Chunk;
+        const auto hash_chunk = [this](size_t c) {
+            const size_t from = c * Chunk, to = std::min(pages.size(), from + Chunk);
+            for (size_t i = from; i < to;) {
+                size_t j = i + 1;
+                while (j < to && pages[j].first == pages[j - 1].first + 1) {
+                    ++j;
+                }
+                const VAddr run = pages[i].first << PM_PAGE_BITS;
+                if (runtime_memory_is_mapped(run, (j - i) << PM_PAGE_BITS)) {
+                    for (size_t k = i; k < j; ++k) {
+                        changed[k] = HashPage(pages[k].first << PM_PAGE_BITS) != pages[k].second;
+                    }
+                }
+                i = j;
+            }
+        };
+        if (chunks > 1 && Gow3Copy::Enabled()) {
+            Gow3Copy::ParallelFor(chunks, hash_chunk);
+        } else {
+            for (size_t c = 0; c < chunks; ++c) {
+                hash_chunk(c);
+            }
+        }
+        // Each changed run is one write "fault" (the watch lock is not held: the invalidation
+        // ends the watches through Protect).
+        u64 changed_pages = 0;
+        for (size_t i = 0; i < pages.size();) {
+            if (!changed[i]) {
+                ++i;
+                continue;
+            }
+            size_t j = i + 1;
+            while (j < pages.size() && changed[j] && pages[j].first == pages[j - 1].first + 1) {
+                ++j;
+            }
+            {
+                std::scoped_lock lock{watch_mutex};
+                for (size_t k = i; k < j; ++k) {
+                    changed_before.insert(pages[k].first);
+                }
+            }
+            changed_pages += j - i;
+            rasterizer->InvalidateMemory(pages[i].first << PM_PAGE_BITS, (j - i) << PM_PAGE_BITS);
+            i = j;
+        }
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - begin).count();
+        scans++;
+        scan_ns += u64(ns);
+        scanned_pages += pages.size();
+        changed_total += changed_pages;
+        max_watched = std::max<u64>(max_watched, watched_now);
+        if (begin - last_report > std::chrono::seconds(5)) {
+            std::printf("GPU: write checks: %llu submissions, %.1f MiB hashed on average, %.1f MiB watched, "
+                        "%zu hot pages, %.2f ms per check, %llu pages changed, %llu read watches ignored\n",
+                        (unsigned long long)scans,
+                        scans ? double(scanned_pages) / double(scans) * PM_PAGE_SIZE / 1048576.0 : 0.0,
+                        double(max_watched) * PM_PAGE_SIZE / 1048576.0, hot.size(),
+                        scans ? double(scan_ns) / double(scans) / 1e6 : 0.0,
+                        (unsigned long long)changed_total,
+                        (unsigned long long)read_watches.load(std::memory_order_relaxed));
+            last_report = begin;
+            scans = scan_ns = scanned_pages = changed_total = max_watched = 0;
+        }
+    }
+
+    std::mutex watch_mutex, scan_mutex;
+    std::map<u64, u64> watched;            ///< page -> hash of its contents when the watch began
+    std::unordered_map<u64, u64> hot;      ///< watched pages that changed before: checked every time
+    std::unordered_set<u64> changed_before; ///< pages a check found changed
+    u64 cursor{};                          ///< where the next round-robin budget starts
+    std::vector<std::pair<u64, u64>> pages;
+    std::vector<u8> changed;
+    std::atomic<u64> read_watches{};
+    u64 scans{}, scan_ns{}, scanned_pages{}, changed_total{}, max_watched{};
+    std::chrono::steady_clock::time_point last_report{};
+};
+#endif
+
 PageManager::PageManager(Vulkan::Rasterizer* rasterizer_) {
+#ifdef __SWITCH__
+    impl = std::make_unique<HashImpl>(rasterizer_);
+    return;
+#endif
 #ifdef __linux__
     if (std::getenv("GOW3_UFFD") && std::getenv("GOW3_UFFD")[0] == '1') {
         try {
@@ -407,6 +625,10 @@ PageManager::PageManager(Vulkan::Rasterizer* rasterizer_) {
 }
 
 PageManager::~PageManager() = default;
+
+void PageManager::CheckGuestWrites() {
+    impl->CheckGuestWrites();
+}
 
 void PageManager::OnGpuMap(VAddr address, size_t size) {
     impl->OnMap(address, size);

@@ -9,6 +9,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #undef near
+#elif defined(__SWITCH__)
+#include <unistd.h> // gow3 (Switch 2): no fault contexts (the aarch64 branch below ignores it)
 #else
 #include <ucontext.h>
 #include <unistd.h>

@@ -54,6 +54,18 @@ uintptr_t box64e_bridge(void* fn, box64e_kind kind, const char* name);
  * every guest register through the accessors below (varargs and unusual ABIs). */
 uintptr_t box64e_bridge_emu(void (*fn)(x64emu_t* emu), const char* name);
 const char* box64e_bridge_name(uintptr_t guest_addr);
+/* Diagnostics (GR_TRACE_BRIDGES=1): one line per guest thread with its last system call. */
+/* sample (may be NULL) fills x0-x28, fp, lr, pc, sp, 0 of a host thread; 0 on success. A
+ * thread found in host code is described by box64e_trace_native (set by the host). */
+void box64e_trace_report(void (*line)(const char*), int (*sample)(uint64_t host, uint64_t regs[34]));
+extern void (*box64e_trace_native)(uint64_t host, const uint64_t regs[34], void (*line)(const char*));
+const char* box64e_trace_name_of(uint64_t host);
+/* Names the calling guest thread in the trace (set by the host). */
+extern const char* (*box64e_thread_name)(void);
+/* The calling host thread, as the sampler takes it (set by the host). */
+extern uint64_t (*box64e_thread_host)(void);
+/* The game image's base, for image-relative x86 addresses in the trace. */
+extern uintptr_t box64e_trace_image;
 
 /* The calling thread's emulator, created on first use with a guest stack of stack_size bytes
  * (0: 1 MiB). fs_base/gs_base set the guest segment bases (TLS). */
@@ -77,6 +89,15 @@ void box64e_set_mxcsr(x64emu_t* emu, uint32_t mxcsr);
 uintptr_t box64e_guest_address(uintptr_t native_pc);
 /* Nonzero once the calling thread's emulator stopped on an error (bad opcode, guest fault...). */
 int box64e_guest_error(void);
+
+/* Box64's dynarec test mode from now on: blocks translated afterwards also run in the
+ * interpreter and any difference is printed (start/end 0: everywhere). A debugging aid. */
+void box64e_set_dynarec_test(int on, uintptr_t start, uintptr_t end);
+/* 0: code reached from now on runs in the interpreter (blocks already translated stay). */
+void box64e_set_dynarec(int on);
+
+/* Counter ticks subtracted from the guest's RDTSC (the host's suspended time); NULL: none. */
+extern volatile uint64_t* box64e_tsc_offset;
 
 /* The guest CPU state of an emulator (registers, rip, flags, SSE/AVX, x87/MMX, MXCSR, deferred
  * flags), for switching fibers on one emulator. */

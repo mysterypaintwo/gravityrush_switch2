@@ -76,10 +76,15 @@ static int language(void) { const char *v=getenv("GOW3_LANGUAGE"); return v ? at
 static ABI int32_t system_param(int32_t id,int32_t *value) {
     if (!value) return SYSTEM_PARAMETER;
     switch (id) {
-    case 1: *value=language(); break;           /* language (1 = English US, 8 = Russian) */
+    case 1: { /* language (1 = English US, 8 = Russian) */
+        *value=language();
+        static int told;
+        if (!told++) printf("Runtime: the game asked for the system language: %d\n",*value);
+        break;
+    }
     case 2: *value=1; break;                    /* date format DD/MM/YYYY */
     case 3: *value=1; break;                    /* 24-hour clock */
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__SWITCH__) /* compat_utc_offset: no tm_gmtoff */
     case 4: *value=(int32_t)(compat_utc_offset(time(NULL))/60); break;
 #else
     case 4: { time_t now=time(NULL); struct tm t; localtime_r(&now,&t); *value=(int32_t)(t.tm_gmtoff/60); break; }

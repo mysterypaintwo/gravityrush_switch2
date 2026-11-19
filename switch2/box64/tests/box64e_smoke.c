@@ -9,6 +9,30 @@
 
 #include "box64e.h"
 
+#ifdef __SWITCH__
+#include <stdarg.h>
+#include <switch.h>
+/* On the console: every line goes to the screen and to sdmc:/box64e_smoke.txt (flushed per
+ * line, so a crash still leaves the lines before it). */
+static FILE* smoke_log;
+static int smoke_printf(const char* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    char line[512];
+    const int n = vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    fputs(line, stdout);
+    consoleUpdate(NULL);
+    if (smoke_log) { fputs(line, smoke_log); fflush(smoke_log); }
+    return n;
+}
+static int smoke_puts(const char* s) { return smoke_printf("%s\n", s); }
+/* smoke_main below prints through these (main keeps the plain console printf). */
+#define printf smoke_printf
+#define puts smoke_puts
+#endif
+
 static const uint8_t code_add[] = {0x48, 0x8d, 0x04, 0x37, 0xc3}; /* lea rax,[rdi+rsi]; ret */
 
 static const uint8_t code_sum[] = {  /* rax = n + (n-1) + ... + 1 */
@@ -69,7 +93,7 @@ static uintptr_t place(uint8_t* mem, size_t* off, const uint8_t* code, size_t si
     return at;
 }
 
-int main(void)
+static int smoke_main(void)
 {
     box64e_jit jit;
     if (box64e_jit_create(64 << 20, &jit)) { puts("JIT memory: FAIL"); return 1; }
@@ -107,3 +131,30 @@ int main(void)
     printf("%s\n", failures ? "SMOKE TEST FAILED" : "all checks passed");
     return failures ? 1 : 0;
 }
+
+#ifdef __SWITCH__
+#undef printf
+#undef puts
+/* On the console: the checks are shown and logged as they run (smoke_printf), then the verdict. */
+int main(void)
+{
+    consoleInit(NULL);
+    smoke_log = fopen("sdmc:/box64e_smoke.txt", "w");
+    const int result = smoke_main();
+    if (smoke_log) fclose(smoke_log);
+    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+    PadState pad;
+    padInitializeDefault(&pad);
+    printf("box64e smoke test: %s\n", result ? "FAILED" : "all checks passed");
+    printf("Details: sdmc:/box64e_smoke.txt\n\nPress + to exit.\n");
+    while (appletMainLoop()) {
+        padUpdate(&pad);
+        if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
+        consoleUpdate(NULL);
+    }
+    consoleExit(NULL);
+    return result;
+}
+#else
+int main(void) { return smoke_main(); }
+#endif

@@ -130,6 +130,10 @@ bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanosec
 #else
 
 void SetCurrentThreadPriority(ThreadPriority new_priority) {
+#ifdef __SWITCH__
+    (void)new_priority; // gow3 (Switch 2): threads keep the default Horizon priority
+}
+#else
     pthread_t this_thread = pthread_self();
 
     const auto scheduling_type = SCHED_OTHER;
@@ -146,6 +150,7 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 
     pthread_setschedparam(this_thread, scheduling_type, &params);
 }
+#endif
 
 bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanoseconds* remaining,
                    const bool interruptible) {
@@ -201,6 +206,8 @@ void SetCurrentThreadName(const char* name) {
         errno = e;
         LOG_ERROR(Common, "Failed to set thread name to '{}': {}", truncated, GetLastErrorMsg());
     }
+#elif defined(__SWITCH__)
+    (void)name; // gow3 (Switch 2): Horizon threads have no names
 #else
     pthread_setname_np(pthread_self(), name);
 #endif
@@ -251,6 +258,8 @@ std::string GetCurrentThreadName() {
     const auto result = Common::UTF16ToUTF8(name);
     LocalFree(name);
     return result;
+#elif defined(__SWITCH__)
+    return "<unknown name>";
 #else
     char name[256];
     if (pthread_getname_np(pthread_self(), name, sizeof(name)) != 0) {

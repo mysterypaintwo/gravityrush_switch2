@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "gow3_arch.h"
+#include "gow3_bringup.h"
 #include <thread>
 #include <algorithm>
 #include <cstdio>
@@ -380,6 +381,7 @@ void Scheduler::SyncRecording() {
 
 void Scheduler::RecorderThread(std::stop_token stoken) {
     Common::SetCurrentThreadName("gow3:VkRecorder");
+    GOW3_BRINGUP("recorder thread: running");
     while (true) {
         // Spin briefly before sleeping: the next chunk usually follows within microseconds,
         // and a sleeping recorder costs the GPU thread a wake-up syscall per kick. With few
@@ -517,7 +519,9 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
+    GOW3_TRACE("submit: taking the submit lock");
     std::scoped_lock lk{submit_mutex};
+    GOW3_TRACE("submit: lock held");
     const u64 signal_value = work_semaphore.NextTick();
 
 #if TRACY_GPU_ENABLED
@@ -529,17 +533,22 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 #endif
 
     if (on_submit) {
+        GOW3_TRACE("submit: submit callback");
         on_submit(info);
     }
 
+    GOW3_TRACE("submit: ending rendering");
     EndRendering();
     if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
         // Until the next submission's first timestamp: mostly the GPU waiting for it.
         profiler->Mark(0x5B317ull, [] { return std::string{"(between submissions: GPU idle)"}; });
     }
+    GOW3_TRACE("submit: syncing the recorder");
     SyncRecording();
     // Guest memory copies into staging read by this submission (copy threads).
+    GOW3_TRACE("submit: waiting for host copies");
     WaitHostCopies();
+    GOW3_TRACE("submit: ending the command buffer");
     if (executing_rendering) {  // an unbalanced begin: the command buffer must not end inside it
         current_cmdbuf.endRendering();
         executing_rendering = false;
@@ -573,19 +582,26 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
         .pSignalSemaphores = info.signal_semas.data(),
     };
 
+    GOW3_TRACE("submit: overlay textures");
     ImGui::Core::TextureManager::Submit();
+    GOW3_TRACE("submit: vkQueueSubmit");
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    GOW3_TRACE("submit: vkQueueSubmit returned");
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
     work_semaphore.Refresh();
+    GOW3_TRACE("submit: command buffers");
     AllocateWorkerCommandBuffers();
 
     // Apply pending operations
+    GOW3_TRACE("submit: pending operations");
     PopPendingOperations();
+    GOW3_TRACE("submit: done");
 }
 
 void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuSchedPriorityPendingOpsRunner");
+    GOW3_BRINGUP("pending ops thread: running");
 
     while (!stoken.stop_requested()) {
         PendingOp op;

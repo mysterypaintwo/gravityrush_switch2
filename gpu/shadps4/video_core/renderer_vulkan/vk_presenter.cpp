@@ -17,6 +17,7 @@
 #include "gow3_graphics.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
+#include "gow3_bringup.h"
 #include "video_core/renderer_vulkan/vk_warmup_inbox.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/texture_cache/image.h"
@@ -154,6 +155,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     Gow3Overlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
+    GOW3_GPU_SYNC(draw_scheduler, "presenter passes and overlay created");
 
     const bool binary_cache = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARIES", true) &&
                               EmulatorSettings.IsPipelineCacheEnabled();
@@ -567,6 +569,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 }
 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {
+    GOW3_BRINGUP("blank frame: prepare");
     if (!present_thread) {
         rasterizer->DrainDrawPipe(DrawPipe::ReasonCommands); // as in PrepareFrame
     }
@@ -638,7 +641,16 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
+    GOW3_BRINGUP("blank frame: submitting");
+#ifdef __SWITCH__
+    static std::atomic<int> traced{0};
+    gow3_trace_submit = traced.fetch_add(1) < 2; // the first two blank frames' submission steps
+#endif
     scheduler.Flush(info);
+#ifdef __SWITCH__
+    gow3_trace_submit = false;
+#endif
+    GOW3_BRINGUP("blank frame: submitted");
     return frame;
 }
 
@@ -699,6 +711,7 @@ void Presenter::PresentLoadingFrame() {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+    GOW3_BRINGUP("present: start");
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
@@ -722,6 +735,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
     }
 
+    GOW3_BRINGUP("present: acquiring a swapchain image");
     if (!swapchain.AcquireNextImage()) {
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
         if (!swapchain.AcquireNextImage()) {
@@ -856,7 +870,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
+    GOW3_BRINGUP("present: submitting");
     scheduler.Flush(info);
+    GOW3_BRINGUP("present: queueing the image");
 
     // Present to swapchain.
     {
@@ -865,6 +881,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
     }
+    GOW3_BRINGUP("present: done");
 
     free_frame();
     if (!is_reusing_frame && is_game_frame) {

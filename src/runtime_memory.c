@@ -46,12 +46,25 @@ static uint64_t pool_size_bytes(void) {
 #define LOW_MIN UINT64_C(0x7000000000)
 #define USER_MIN UINT64_C(0x8000000000)
 #define LOW_MAX USER_MIN
+#elif defined(__SWITCH__)
+/* Switch 2 (Horizon): the kernel places the alias region at a different address every launch
+ * (ASLR, 39-bit address space). The host computes the ranges inside it at startup
+ * (runtime_memory_set_layout, switch2/host/gr_switch.c): low memory, then the guest user range,
+ * whose start is where the direct + flexible pool is mapped once (no memory aliasing). */
+static uint64_t horizon_low_min, horizon_user_min, horizon_user_max;
+#define LOW_MIN horizon_low_min
+#define USER_MIN horizon_user_min
+#define LOW_MAX USER_MIN
 #else
 #define LOW_MIN UINT64_C(0x0800000000)
 #define USER_MIN UINT64_C(0x1000000000)
 #define LOW_MAX USER_MIN
 #endif
+#ifdef __SWITCH__
+#define USER_MAX horizon_user_max
+#else
 #define USER_MAX UINT64_C(0xfc00000000)
+#endif
 #define LIMIT 4096
 #define INVALID ((int32_t)UINT32_C(0x80020016))
 #define NO_MEMORY ((int32_t)UINT32_C(0x8002000c))
@@ -109,7 +122,11 @@ static Vma *vmas; static size_t vma_count, vma_capacity;
 static int pool_fd=-1;
 #endif
 static unsigned char *backing_base; /* second view of the pool: host writes bypass guest/GPU page protection */
+#ifdef __SWITCH__
+#define FLEX_SPAN FLEXIBLE_SIZE /* the PS4's flexible size: physical memory is mapped, not reserved */
+#else
 #define FLEX_SPAN (UINT64_C(1024) * 1024 * 1024)
+#endif
 static uint64_t flex_bitmap[FLEX_SPAN/PAGE/64];
 /* GPU hooks (gow3gpu): notified outside the lock, in order, after each operation. */
 typedef void (*GpuRange)(uintptr_t address, uint64_t size);
@@ -269,6 +286,86 @@ static int pool(void) {
     backing_base=MapViewOfFile3(section,GetCurrentProcess(),NULL,0,bytes,0,PAGE_READWRITE,NULL,0);
     return backing_base ? 0 : -1;
 }
+#elif defined(__SWITCH__)
+/* ---- host mappings (Switch 2) ----
+ * Horizon has no way to show the same memory at two addresses, but Gravity Rush only maps
+ * memory at USER_MIN + its physical offset (measured from boot into gameplay on the Mac). So
+ * the pool is physical memory mapped once at USER_MIN, and a mapping is accepted when it lands
+ * there. Memory is never unmapped or protected: the stock kernel does not deliver memory
+ * faults, so protections would only turn mistakes into crashes, and nothing tracks pages with
+ * faults on the console (the GPU library compares contents instead). */
+#include <switch.h>
+void runtime_memory_set_layout(uint64_t low_min, uint64_t user_min, uint64_t user_max) {
+    horizon_low_min=low_min; horizon_user_min=user_min; horizon_user_max=user_max;
+}
+/* The pool's address range is reserved (the alias region), and its physical memory is mapped
+ * when the game allocates it (direct memory) or maps it (flexible memory): Gravity Rush
+ * allocates 4466 of the 5056 MiB and maps no flexible memory, and what it leaves goes to the
+ * host heap (switch2/host/gr_switch.c). Pages stay mapped until exit (host_discard zeroes them
+ * in place). */
+static uint64_t committed[(UINT64_C(8) << 30)/PAGE/64]; /* POOL_SIZE+FLEX_SPAN pages */
+static uint64_t committed_bytes;
+static int committed_test(uint64_t page) { return (int)((committed[page/64]>>(page%64))&1); }
+static int commit(uint64_t phys, uint64_t size) {
+    const uint64_t first=phys/PAGE, last=(phys+size+PAGE-1)/PAGE;
+    if (last>(uint64_t)sizeof(committed)*8) return -1;
+    for (uint64_t p=first; p<last;) {
+        if (committed_test(p)) { ++p; continue; }
+        uint64_t q=p;
+        while (q<last && !committed_test(q)) ++q;
+        const Result rc=svcMapPhysicalMemory(backing_base+p*PAGE,(q-p)*PAGE);
+        if (R_FAILED(rc)) {
+            fprintf(stderr,"Runtime: guest memory map of %" PRIu64 " MiB at phys 0x%" PRIx64 " failed (0x%x); %" PRIu64 " MiB mapped\n",
+                    ((q-p)*PAGE)>>20,p*PAGE,rc,committed_bytes>>20);
+            return -1;
+        }
+        for (uint64_t k=p; k<q; ++k) committed[k/64]|=UINT64_C(1)<<(k%64);
+        committed_bytes+=(q-p)*PAGE;
+        p=q;
+    }
+    return 0;
+}
+static int pool(void) {
+    if (backing_base) return 0;
+    const uint64_t bytes=POOL_SIZE+FLEX_SPAN;
+    if (!USER_MIN || USER_MIN+bytes>USER_MAX) { fputs("Runtime: memory layout not set\n",stderr); return -1; }
+    backing_base=(unsigned char *)(uintptr_t)USER_MIN;
+    return 0;
+}
+void runtime_memory_reserve(void) {}
+void runtime_low_release(void);
+/* Before the process returns to the homebrew loader (switch2/host/gr_suspend_horizon.c, every
+ * other thread paused): the loader and the menu after it need this memory back. */
+void runtime_memory_release(void) {
+    if (backing_base) {
+        /* Each mapped run on its own: the kernel refuses one unmap across a gap. */
+        const uint64_t pages=(POOL_SIZE+FLEX_SPAN)/PAGE;
+        unsigned failed=0;
+        for (uint64_t p=0; p<pages;) {
+            if (!committed_test(p)) { ++p; continue; }
+            uint64_t q=p;
+            while (q<pages && committed_test(q)) ++q;
+            if (R_FAILED(svcUnmapPhysicalMemory(backing_base+p*PAGE,(q-p)*PAGE))) ++failed;
+            p=q;
+        }
+        if (failed) fprintf(stderr,"Runtime: %u guest memory unmaps failed\n",failed);
+        memset(committed,0,sizeof(committed));
+        committed_bytes=0;
+        backing_base=NULL;
+    }
+    runtime_low_release();
+}
+static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, uint64_t phys) {
+    (void)prot;
+    if (reserved) return 0; /* address space only: nothing to map */
+    if (address==USER_MIN+phys) return 0;
+    fprintf(stderr,"Runtime: the game maps physical 0x%" PRIx64 " at 0x%" PRIxPTR ", not at 0x%" PRIx64 " (memory aliasing is not available on the console)\n",
+            phys,address,(uint64_t)(USER_MIN+phys));
+    return -1;
+}
+static int host_unmap(uintptr_t address, uint64_t size) { (void)address; (void)size; return 0; }
+static int host_protect(uintptr_t address, uint64_t size, int prot) { (void)address; (void)size; (void)prot; return 0; }
+static void host_discard(uint64_t phys, uint64_t size) { memset(backing_base+phys,0,size); }
 #else
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 static int pool(void) {
@@ -402,10 +499,26 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         if (!address || address%PAGE) return INVALID;
         if ((flags & MAP_NO_OVERWRITE) && overlaps(address,address+size,1)) return NO_MEMORY;
     } else {
+#ifdef __SWITCH__
+        /* Where the pool already has this memory, when it is free (see host_map). */
+        if (kind!=KIND_RESERVED && !overlaps(USER_MIN+phys,USER_MIN+phys+size,0) &&
+            !((USER_MIN+phys)%alignment))
+            address=USER_MIN+phys;
+        else
+#endif
         address=find_free(address,size,alignment);
         if (!address) return NO_MEMORY;
     }
     if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) return NO_MEMORY;
+    /* Mappings that do not sit at USER_MIN + their physical offset: the Switch 2 host has no
+     * memory aliasing, so it maps the pool once at USER_MIN and can only place them there.
+     * Counted (and the first ones logged) to know how often the game asks for anything else. */
+    if (kind!=KIND_RESERVED && address!=USER_MIN+phys) {
+        static unsigned misplaced;
+        if (misplaced++<24)
+            printf("Runtime: mapping 0x%" PRIxPTR "+0x%" PRIx64 " of phys 0x%" PRIx64 " is not at its identity address 0x%" PRIx64 " (%s%s)\n",
+                   address,size,phys,USER_MIN+phys,kind==KIND_DIRECT ? "direct" : "flexible",(flags & MAP_FIXED_FLAG) ? ", fixed" : "");
+    }
     void *mapped=(void *)address;
     drop_range(address,address+size);
     if (vma_insert(vma_index(address),(Vma){address,address+size,kind,prot,type,phys})) return NO_MEMORY;
@@ -460,6 +573,9 @@ static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
         }
         if (!overlap) break;
     }
+#ifdef __SWITCH__
+    if (commit(start,size)) { write_unlock(); return NO_MEMORY; }
+#endif
     blocks[slot] = (Block){start, size, type, 1}; *out = (int64_t)start;
     ++allocations; live_bytes += size;
     write_unlock();
@@ -550,6 +666,9 @@ static int32_t map_flexible_locked(void **inout, uint64_t size, int prot, int fl
     if (flexible_bytes+size>FLEXIBLE_SIZE || pool()) return NO_MEMORY;
     uint64_t phys=flex_alloc(size);
     if (phys==UINT64_MAX) return NO_MEMORY;
+#ifdef __SWITCH__
+    if (commit(phys,size)) { flex_set((phys-POOL_SIZE)/PAGE,size/PAGE,0); return NO_MEMORY; }
+#endif
     int32_t result=place(inout,size,prot,flags,PAGE,KIND_FLEXIBLE,0,phys);
     if (result) flex_free(phys,size); else ++flexible_maps;
     return result;
@@ -812,11 +931,52 @@ uintptr_t runtime_memory_resolve(const char *name) {
 }
 /* Host-owned memory the guest can see (image, stacks, trampolines) lives in
  * [LOW_MIN, LOW_MAX): PS4 code packs pointers into 40-bit fields. */
+#ifdef __SWITCH__
+static uintptr_t low_next; /* LOW_MIN is set at startup */
+#else
 static uintptr_t low_next=LOW_MIN;
+#endif
+#ifdef __SWITCH__
+/* The low maps are physical memory with unmapped gaps between them, and the kernel refuses
+ * one unmap across a gap (0xd401): each mapped block is found with svcQueryMemory and
+ * unmapped on its own. */
+void runtime_low_release(void) {
+    uintptr_t at=LOW_MIN;
+    unsigned unmapped=0, failed=0;
+    while (low_next && at<low_next) {
+        MemoryInfo info; u32 page_info;
+        if (R_FAILED(svcQueryMemory(&info,&page_info,at)) || !info.size) break;
+        const uintptr_t start=info.addr>at ? info.addr : at;
+        uintptr_t end=info.addr+info.size;
+        if (end>low_next) end=low_next;
+        if ((info.type&0xff)!=MemType_Unmapped && end>start) {
+            const Result rc=svcUnmapPhysicalMemory((void *)start,end-start);
+            if (R_FAILED(rc)) {
+                if (failed++<8) fprintf(stderr,"Runtime: low memory unmap at 0x%" PRIxPTR " (%" PRIuPTR " KiB, type 0x%x, attr 0x%x) failed (0x%x)\n",
+                                        start,(end-start)>>10,info.type,info.attr,rc);
+            } else ++unmapped;
+        }
+        at=end;
+    }
+    printf("Runtime: low memory released (%u blocks, %u failed)\n",unmapped,failed);
+    low_next=0;
+}
+#endif
 void *runtime_low_map(size_t size, int prot) {
     size=align_up(size,PAGE);
     write_lock();
-#ifdef _WIN32
+#ifdef __SWITCH__
+    (void)prot;
+    if (!low_next) low_next=LOW_MIN;
+    void *p=NULL;
+    if (low_next && low_next+size<=LOW_MAX) {
+        const Result rc=svcMapPhysicalMemory((void *)low_next,size);
+        if (R_SUCCEEDED(rc)) { p=(void *)low_next; low_next+=size+PAGE; }
+        else fprintf(stderr,"Runtime: low memory map of %zu KiB failed (0x%x)\n",size>>10,rc);
+    }
+    write_unlock();
+    return p;
+#elif defined(_WIN32)
     void *p=NULL;
     while (!p && low_next+size<=LOW_MAX) {
         p=VirtualAlloc((void *)low_next,size,MEM_RESERVE|MEM_COMMIT,win_prot(prot));

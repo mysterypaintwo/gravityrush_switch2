@@ -26,6 +26,7 @@
 #include "core/libraries/avplayer/avplayer.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/videoout/driver.h"
+#include "gow3_bringup.h"
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -104,6 +105,7 @@ void VideoOutDriver::RunPresenter(std::function<void()> work, bool if_idle) {
 
 void VideoOutDriver::SwapThread(std::stop_token token) {
     Common::SetCurrentThreadName("gow3:Present");
+    GOW3_BRINGUP("swap thread: running");
     while (true) {
         std::function<void()> work;
         {
@@ -112,6 +114,7 @@ void VideoOutDriver::SwapThread(std::stop_token token) {
             if (!swap_cv.wait(lock, token, [this] { return !swap_queue.empty(); })) {
                 return;
             }
+            GOW3_BRINGUP("swap thread: work");
             work = std::move(swap_queue.front());
             swap_queue.pop_front();
             swap_busy = true;
@@ -374,7 +377,7 @@ void VideoOutDriver::Flip(const Request& req) {
         last_twf = twf;
         const u64 copy_ns = Gow3Stats::t_copy.load(), copy_bytes = Gow3Stats::copy_bytes.load();
         u64 proc_flt = 0;
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__SWITCH__)
         if (rusage usage{}; getrusage(RUSAGE_SELF, &usage) == 0) {
             proc_flt = usage.ru_minflt;
         }
@@ -589,6 +592,14 @@ void VideoOutDriver::Flip(const Request& req) {
 }
 
 void VideoOutDriver::DrawBlankFrame() {
+#ifdef __SWITCH__
+    // gow3 (Switch 2 bring-up): GR_NO_BLANK_FRAMES=1 draws nothing until the game's first flip.
+    static const bool no_blank = [] {
+        const char* v = std::getenv("GR_NO_BLANK_FRAMES");
+        return v && v[0] == '1';
+    }();
+    if (no_blank) return;
+#endif
     RunPresenter([this] {
         const auto empty_frame = presenter->PrepareBlankFrame(true);
         presenter->Present(empty_frame, false, false);
@@ -680,6 +691,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                                                  EmulatorSettings.GetVblankFrequency());
 
     Common::SetCurrentThreadName("shadPS4:PresentThread");
+    GOW3_BRINGUP("present thread: running");
     Common::SetCurrentThreadRealtime(vblank_period);
 
     Common::AccurateTimer timer{vblank_period};
@@ -734,7 +746,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             next_flip = std::chrono::steady_clock::now();
             std::printf("VideoOut: frame limit %u FPS\n", limit);
         }
+        GOW3_BRINGUP("present thread: vblank");
         timer.Start();
+        GOW3_BRINGUP("present thread: timer started");
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;
 
         if (DebugState.IsGuestThreadsPaused()) {
@@ -772,9 +786,11 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             }
         }
 
+        GOW3_BRINGUP("present thread: vblank events");
         {
             // Needs lock here as can be concurrently read by `sceVideoOutGetVblankStatus`
             std::scoped_lock lock{main_port.vo_mutex};
+            GOW3_BRINGUP("present thread: vblank lock held");
 
             // Trigger flip events for the port
             for (auto event : main_port.vblank_events) {
@@ -790,12 +806,17 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             }
 
             // Update vblank status
+            GOW3_BRINGUP("present thread: events triggered");
             vblank_status.count++;
             vblank_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
+            GOW3_BRINGUP("present thread: process time read");
             vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
+            GOW3_BRINGUP("present thread: tsc read");
             main_port.vblank_cv.notify_all();
+            GOW3_BRINGUP("present thread: waiters notified");
         }
 
+        GOW3_BRINGUP("present thread: vblank status updated");
         if (!immediate_flips || main_port.flip_rate != 0) {
             timer.End();
             continue;
@@ -822,7 +843,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 FRAME_END;
             }
         }
+        GOW3_BRINGUP("present thread: sleeping to the next vblank");
         std::this_thread::sleep_until(tick_deadline);
+        GOW3_BRINGUP("present thread: woke");
     }
 }
 

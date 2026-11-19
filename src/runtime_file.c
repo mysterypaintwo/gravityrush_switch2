@@ -145,8 +145,8 @@ static Listing *list_directory(const char *path) {
         if (!l->offsets || !l->types || !l->names) { fputs("Out of memory listing directory\n",stderr); exit(1); }
         memcpy(l->names+bytes,e->d_name,n);
         l->offsets[l->count]=bytes;
-#ifdef _WIN32
-        /* MinGW's dirent has no d_type. */
+#if defined(_WIN32) || defined(__SWITCH__)
+        /* MinGW's dirent has no d_type; Horizon's newlib has no fstatat. */
         char child[1100]; HostStat entry;
         snprintf(child,sizeof(child),"%s/%s",path,e->d_name);
         l->types[l->count]=host_stat(child,&entry) ? 0 : S_ISDIR(entry.st_mode) ? 4 : S_ISREG(entry.st_mode) ? 8 : 0;

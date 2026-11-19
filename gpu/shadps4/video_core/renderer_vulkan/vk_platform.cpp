@@ -8,6 +8,12 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined(__APPLE__)
 #define VK_USE_PLATFORM_METAL_EXT
+#elif defined(__SWITCH__)
+// gow3 (Switch 2): VK_NN_vi_surface on the default NWindow. VK_USE_PLATFORM_VI_NN is defined for
+// the whole library (gpu/CMakeLists.txt), so every file sees the same dispatcher.
+#ifndef VK_USE_PLATFORM_VI_NN
+#define VK_USE_PLATFORM_VI_NN 1
+#endif
 #else
 #define VK_USE_PLATFORM_WAYLAND_KHR
 #define VK_USE_PLATFORM_XLIB_KHR
@@ -26,6 +32,11 @@
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#endif
+
+#ifdef __SWITCH__
+// gow3 (Switch 2): OunceVK's loader entry point (vk_common.h hides the prototypes).
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name);
 #endif
 
 namespace Vulkan {
@@ -101,6 +112,16 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& e
         if (instance.createWaylandSurfaceKHR(&wayland_ci, nullptr, &surface) !=
             vk::Result::eSuccess) {
             LOG_ERROR(Render_Vulkan, "Failed to initialize Wayland surface");
+            UNREACHABLE();
+        }
+    }
+#elif defined(VK_USE_PLATFORM_VI_NN)
+    if (window_info.type == Frontend::WindowSystemType::Vi) {
+        const vk::ViSurfaceCreateInfoNN vi_ci = {
+            .window = window_info.render_surface,
+        };
+        if (instance.createViSurfaceNN(&vi_ci, nullptr, &surface) != vk::Result::eSuccess) {
+            LOG_CRITICAL(Render_Vulkan, "Failed to initialize the VI surface");
             UNREACHABLE();
         }
     }
@@ -182,6 +203,10 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
         break;
     case Frontend::WindowSystemType::Wayland:
         extensions.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
+        break;
+#elif defined(VK_USE_PLATFORM_VI_NN)
+    case Frontend::WindowSystemType::Vi:
+        extensions.push_back(VK_NN_VI_SURFACE_EXTENSION_NAME);
         break;
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
     case Frontend::WindowSystemType::Metal:
@@ -275,9 +300,14 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
     }
 #endif
 
+#ifdef __SWITCH__
+    // gow3 (Switch 2): OunceVK is linked statically; there is no library to open.
+    VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
+#else
     static vk::detail::DynamicLoader dl;
     VULKAN_HPP_DEFAULT_DISPATCHER.init(
         dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr"));
+#endif
 
     const auto [available_version_result, available_version] =
         VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateInstanceVersion

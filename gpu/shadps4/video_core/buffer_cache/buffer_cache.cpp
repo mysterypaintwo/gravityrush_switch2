@@ -65,6 +65,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
            (u64{2} << arena_page_bits) > instance.GetMaxBufferSize()) {
         --arena_page_bits;
     }
+#ifdef __SWITCH__
+    arena_page_bits = MIN_ARENA_PAGE_BITS;
+#endif
     arena_page_size = u64{1} << arena_page_bits;
     num_arena_pages = u64{1} << (ADDRESS_SPACE_BITS - arena_page_bits);
     if (arena_page_bits != MAX_ARENA_PAGE_BITS) {
@@ -419,6 +422,9 @@ void BufferCache::SynchronizeDmaBuffers() {
     }
 }
 
+// gow3: GPU memory held by dense buffer arenas (gow3gpu_memory_report).
+std::atomic<u64> g_gow3_arena_bytes{}, g_gow3_arena_count{};
+
 const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     const u64 first_page = first_block >> blocks_per_arena_page_shift;
     const u64 last_page = last_block >> blocks_per_arena_page_shift;
@@ -434,6 +440,10 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
             const auto* new_arena =
                 &arenas.emplace_back(instance, base_block << block_shift,
                                      num_pages << arena_page_bits, MemoryType::Sparse);
+            if (g_dense_arenas) {
+                g_gow3_arena_bytes.fetch_add(num_pages << arena_page_bits, std::memory_order_relaxed);
+                g_gow3_arena_count.fetch_add(1, std::memory_order_relaxed);
+            }
             address_space[first_page] = new_arena;
             address_space[last_page] = new_arena;
         }
@@ -451,6 +461,8 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     const u64 end_block = (first_addr + total_size) >> block_shift;
     auto* new_arena = &arenas.emplace_back(instance, first_addr, total_size, MemoryType::Sparse);
     if (g_dense_arenas) {
+        g_gow3_arena_bytes.fetch_add(total_size, std::memory_order_relaxed);
+        g_gow3_arena_count.fetch_add(1, std::memory_order_relaxed);
         MigrateDenseArena(new_arena, first_arena, last_arena, base_block, end_block);
     }
     auto* bind = g_dense_arenas ? nullptr : BindsForArena(new_arena);

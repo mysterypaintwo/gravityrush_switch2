@@ -65,7 +65,8 @@ _Static_assert(sizeof(SearchCond)==64 && sizeof(SearchResult)==56,"dir name sear
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int initialized;
 static char title_id[16]="UNKNOWN";
-static struct { int used; char host[700], meta[700]; } slots[SLOTS];
+static struct { int used, writable; char host[700], meta[700]; } slots[SLOTS];
+static volatile int writable_mounts; /* runtime_savedata_busy */
 static char memory_path[720];
 static uint64_t memory_size;
 static size_t mounts_done, memory_writes;
@@ -156,6 +157,8 @@ static int32_t mount(int32_t user, const char *title, const DirName *dir, uint32
     if (!exists && (make_dirs(host) || make_dirs(meta))) { pthread_mutex_unlock(&lock); return ERR_INTERNAL; }
     if (!exists) { Param empty={0}; write_param(meta,&empty); }
     slots[slot].used=1;
+    slots[slot].writable=!(mode & MODE_RDONLY);
+    if (slots[slot].writable) __atomic_add_fetch(&writable_mounts,1,__ATOMIC_RELAXED);
     snprintf(slots[slot].host,sizeof(slots[slot].host),"%s",host);
     snprintf(slots[slot].meta,sizeof(slots[slot].meta),"%s",meta);
     memset(result,0,sizeof(*result));
@@ -187,7 +190,11 @@ static ABI int32_t save_umount(const MountPoint *point) {
     if (!initialized) return ERR_NOT_INITIALIZED;
     pthread_mutex_lock(&lock);
     int slot=slot_of(point);
-    if (slot>=0) { runtime_file_unmount(point->data); slots[slot].used=0; }
+    if (slot>=0) {
+        runtime_file_unmount(point->data); slots[slot].used=0;
+        if (slots[slot].writable) __atomic_sub_fetch(&writable_mounts,1,__ATOMIC_RELAXED);
+        slots[slot].writable=0;
+    }
     pthread_mutex_unlock(&lock);
     return slot>=0 ? 0 : ERR_NOT_FOUND;
 }
@@ -341,5 +348,8 @@ static const RuntimeExport exports[]={
     {"sceSaveDataSetSaveDataMemory",memory_set},
 };
 uintptr_t runtime_savedata_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
+/* Save data mounted for writing (a save in progress): the Switch 2 host lets it finish before
+ * the game freezes on the HOME menu (switch2/host/gr_suspend_horizon.c). Lock-free. */
+int runtime_savedata_busy(void) { return __atomic_load_n(&writable_mounts,__ATOMIC_RELAXED); }
 void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }
 

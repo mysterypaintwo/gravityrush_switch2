@@ -1,0 +1,63 @@
+Gravity Rush Remastered for Switch 2 (kaiHEN homebrew): setting up the SD card
+=============================================================================
+
+This port contains no game data. You need your own legally acquired copy of Gravity Rush
+Remastered for PS4 (European release CUSA01113 or US release CUSA01130, version 01.00), and a
+computer (Windows, macOS or Linux, with Python 3.8 or newer) to prepare it once.
+
+
+1. Get the unpacked game folder
+-------------------------------
+The folder must contain:
+
+    eboot.bin      the game program (plaintext SELF or ELF, as dumpers write it)
+    sce_module/    the game's own libraries (.prx)
+    sce_sys/       param.sfo, icons
+    arc/           the five arc_*.psarc archives (about 9.2 GB)
+
+If you have the game as a fake PKG (fPKG) of your own dump, this unpacks it:
+
+    python3 scripts/pkg_extract.py <game.pkg> <game folder>      (Windows: py -3 scripts\pkg_extract.py ...)
+
+Retail PKGs are encrypted for the console and cannot be unpacked this way.
+
+
+2. Prepare the SD card files
+----------------------------
+From the repository folder:
+
+    macOS, Linux:   switch2/prepare_sd.sh <game folder> <SD card root, or any folder>
+    Windows:        powershell -ExecutionPolicy Bypass -File switch2\prepare_sd.ps1 <game folder> <SD card root, or any folder>
+
+For example, with the SD card as drive E: on Windows:
+
+    powershell -ExecutionPolicy Bypass -File switch2\prepare_sd.ps1 D:\Games\CUSA01113 E:\
+
+It reads your eboot.bin and modules and writes the boot files the port loads, then copies your
+game files. The result:
+
+    switch/gravityrush_remastered/
+        gravityrush_remastered.nro      the port (copied when it has been built)
+        prep/                boot-linked.bin, content.bin, patches.bin (made from your game)
+        game/                eboot.bin, sce_module/, sce_sys/, arc/, args.txt (your game files)
+        user/                saves and settings (filled in by the game)
+
+If you gave a folder instead of the SD card, copy its "switch" folder to the root of the SD card.
+FAT32 and exFAT cards both work (the largest file is 3.5 GB). Run the script again after
+updating the port: only the boot files are made again, game files already on the card are kept.
+
+
+3. Play
+-------
+Start Gravity Rush Remastered from the homebrew menu. Saves are kept in
+switch/gravityrush_remastered/user/; back that folder up to keep them.
+
+Settings are in switch/gravityrush_remastered/options.ini, written on the first start, and in
+the in-game menu (hold ZL and click the right stick; tap it or use the D-pad and buttons):
+  language=ENG    ENG, FRA, DEU, ITA, ESP, POR, RUS, POL, NLD or JPN
+  swap_ab=0       1: A confirms (the PS4's cross) and B cancels; 0: by position (B confirms)
+Both apply the next time the game starts. The folder is not the
+one the Gravity Rush (PS Vita) port uses (switch/gravityrush/), so both can be installed.
+
+
+Never share the prep/ or game/ folders: they are made from, or are, the game itself.

@@ -26,6 +26,25 @@ inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
 inline constexpr int OutputCount = 4;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
 
+/// The languages options.ini names (language=ENG): the PS4 language code each one gives the
+/// game. JPN starts the game without its region argument (the Japanese text it then shows).
+struct Language {
+    const char* key;
+    const char* name;
+    int code;
+};
+inline constexpr Language Languages[] = {
+    {"ENG", "English", 18}, {"FRA", "French", 2},     {"DEU", "German", 4},  {"ITA", "Italian", 5},
+    {"ESP", "Spanish", 3},  {"POR", "Portuguese", 7}, {"RUS", "Russian", 8}, {"POL", "Polish", 16},
+    {"NLD", "Dutch", 6},    {"JPN", "Japanese", 0},
+};
+inline const char* LanguageKey(int code) {
+    for (const auto& l : Languages) {
+        if (l.code == code) return l.key;
+    }
+    return "ENG";
+}
+
 struct Values {
     std::atomic<int> upscaler{UpscalerOff}; ///< Gravity Rush: off (the game's FXAA) by default
     std::atomic<int> preset{NativeAA};
@@ -45,6 +64,12 @@ struct Values {
     std::atomic<unsigned> overlay_items{7};
     std::atomic<int> overlay_scale{100}, overlay_corner{1}, overlay_opacity{50}, overlay_layout{0};
     std::atomic<int> menu_tab{0};
+    /// The game's language for the next launch (a PS4 language code; 18 English: this copy is the
+    /// European release). The running game keeps the one it started with (GOW3_LANGUAGE).
+    std::atomic<int> language{18};
+    /// Switch 2: A is the PS4's cross (confirm) and B its circle, prompts too (next launch; off:
+    /// by position, B cross and A circle).
+    std::atomic<bool> swap_ab{false};
     // Graphics (gow3_graphics.h). Live: applied on the next frame.
     std::atomic<int> display_mode{1}; // borderless by default
     /// Exclusive fullscreen refresh rate in Hz; 0 keeps the desktop's.

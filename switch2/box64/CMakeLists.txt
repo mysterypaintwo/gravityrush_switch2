@@ -78,6 +78,9 @@ add_custom_command(
 add_custom_target(box64e_generated DEPENDS "${GEN_DIR}/dynacache_hashes.h")
 
 set(BOX64E_INCLUDES "${GEN_DIR}" "${BOX64E_DIR}" "${BOX64_ROOT}/src/include" "${BOX64_ROOT}/src")
+if(NINTENDO_SWITCH)
+    list(PREPEND BOX64E_INCLUDES "${BOX64E_DIR}/horizon")  # sys/mman.h and other newlib gaps
+endif()
 set(BOX64E_DEFINES DYNAREC ARM64 ARM_DYNAREC BOX64_EMBED NOALIGN STATICBUILD)
 if(APPLE)
     list(APPEND BOX64E_DEFINES _DARWIN_C_SOURCE _XOPEN_SOURCE=700)
@@ -108,7 +111,9 @@ target_compile_definitions(box64e_test_interpreter PRIVATE TEST_INTERPRETER)
 add_library(box64e STATIC
     ${CORE} ${INTERPRETER} ${DYNAREC_ASM}
     "${BOX64E_DIR}/os_embed.c" "${BOX64E_DIR}/box64e.c"
+    $<$<BOOL:${NINTENDO_SWITCH}>:${BOX64E_DIR}/os_embed_horizon.c>
     $<$<PLATFORM_ID:Darwin>:${BOX64E_DIR}/box64e_jit_macos.c>
+    $<$<BOOL:${NINTENDO_SWITCH}>:${BOX64E_DIR}/box64e_jit_horizon.c>
     $<TARGET_OBJECTS:box64e_pass0> $<TARGET_OBJECTS:box64e_pass1>
     $<TARGET_OBJECTS:box64e_pass2> $<TARGET_OBJECTS:box64e_pass3>
     $<TARGET_OBJECTS:box64e_test_interpreter>)
@@ -118,6 +123,23 @@ target_compile_definitions(box64e PRIVATE ${BOX64E_DEFINES})
 target_compile_options(box64e PRIVATE $<$<COMPILE_LANGUAGE:C>:${BOX64E_FLAGS}>)
 add_dependencies(box64e box64e_generated)
 
+if(NINTENDO_SWITCH)
+    # Horizon (Switch 2 under kaiHEN): the JIT goes through libkaihen's RO hooks.
+    target_link_libraries(box64e INTERFACE kaihen)
+endif()
+
 # A first test: translate and run small hand-written x86-64 functions (tests/box64e_smoke.c).
 add_executable(box64e_smoke "${BOX64E_DIR}/tests/box64e_smoke.c")
 target_link_libraries(box64e_smoke PRIVATE box64e m)
+# Runs one stretch of the game's code (read from your eboot.elf) to compare dynarec and interpreter.
+if(NOT NINTENDO_SWITCH)
+    add_executable(box64e_block "${BOX64E_DIR}/tests/box64e_block.c")
+    target_link_libraries(box64e_block PRIVATE box64e m)
+    # Every SSE/AVX form of the game, dynarec vs interpreter (tests/simd_forms.py, simd_compare.py).
+    add_executable(box64e_simdcheck "${BOX64E_DIR}/tests/box64e_simdcheck.c")
+    target_link_libraries(box64e_simdcheck PRIVATE box64e m)
+endif()
+if(NINTENDO_SWITCH)
+    target_include_directories(box64e_smoke PRIVATE "${BOX64E_DIR}/horizon")
+    nx_create_nro(box64e_smoke)
+endif()

@@ -24,6 +24,7 @@
 #include <vector>
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include "gow3_button_glyphs.h" // gow3: Switch button prompts
 #include FT_MODULE_H
 #include FT_SYSTEM_H
 #include FT_TRUETYPE_TABLES_H
@@ -1502,7 +1503,10 @@ s32 GetCharGlyphMetrics(OrbisFontHandle fontHandle, u32 code, OrbisFontGlyphMetr
         }
     }
 
-    FT_UInt resolved_glyph_index = ResolveGlyphIndexWithFallback(resolved_face, resolved_code);
+    FT_UInt resolved_glyph_index = Gow3ButtonGlyphs::GlyphIndex(resolved_face, resolved_code); // gow3: Switch prompts
+    if (resolved_glyph_index == 0) {
+        resolved_glyph_index = ResolveGlyphIndexWithFallback(resolved_face, resolved_code);
+    }
     if (resolved_glyph_index == 0) {
         if (st->ext_face_ready && st->ext_ft_face && resolved_face != st->ext_ft_face) {
             const FT_UInt gi = ResolveGlyphIndexWithFallback(st->ext_ft_face, resolved_code);

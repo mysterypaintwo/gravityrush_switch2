@@ -102,6 +102,10 @@ public:
     /// gow3: a black frame with the loading screen (Gow3Overlay::SetLoading) only.
     void PresentLoadingFrame();
     Frame* PrepareLastFrame();
+    /// gow3: the Vulkan instance (memory reports).
+    const Instance& GetInstance() const {
+        return instance;
+    }
 
 private:
     Frame* GetRenderFrame();

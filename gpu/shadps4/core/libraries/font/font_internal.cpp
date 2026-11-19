@@ -8,6 +8,7 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include "gow3_button_glyphs.h" // gow3: Switch button prompts
 #include FT_OUTLINE_H
 #include FT_TRUETYPE_TABLES_H
 
@@ -669,7 +670,7 @@ bool BuildTrueOutline(GeneratedGlyph& gg) {
     }
 
     const FT_UInt glyph_index =
-        FT_Get_Char_Index(resolved_face, static_cast<FT_ULong>(resolved_code));
+        Gow3ButtonGlyphs::GlyphIndex(resolved_face, static_cast<FT_ULong>(resolved_code));
     if (glyph_index == 0) {
         return false;
     }
@@ -1206,7 +1207,7 @@ s32 RenderCodepointToSurface(FontState& st, Libraries::Font::OrbisFontHandle han
 
     FT_Face resolved_face = primary_face;
     FT_UInt resolved_glyph_index =
-        resolved_face ? FT_Get_Char_Index(resolved_face, static_cast<FT_ULong>(code)) : 0;
+        resolved_face ? Gow3ButtonGlyphs::GlyphIndex(resolved_face, static_cast<FT_ULong>(code)) : 0;
     float resolved_scale_factor = resolve_scale_factor(resolved_face);
     if (resolved_glyph_index == 0) {
         if (st.ext_face_ready && st.ext_ft_face && resolved_face != st.ext_ft_face) {
@@ -1447,7 +1448,7 @@ s32 RenderCodepointToSurfaceWithScale(FontState& st, Libraries::Font::OrbisFontH
 
     FT_Face resolved_face = primary_face;
     FT_UInt resolved_glyph_index =
-        resolved_face ? FT_Get_Char_Index(resolved_face, static_cast<FT_ULong>(code)) : 0;
+        resolved_face ? Gow3ButtonGlyphs::GlyphIndex(resolved_face, static_cast<FT_ULong>(code)) : 0;
     float resolved_scale_factor = st.system_font_scale_factor;
     if (resolved_glyph_index == 0) {
         for (const auto& fb : st.system_fallback_faces) {
@@ -1676,7 +1677,7 @@ const GlyphEntry* GetGlyphEntry(FontState& st, Libraries::Font::OrbisFontHandle 
 
     float resolved_scale_factor = st.system_font_scale_factor;
     FT_Face resolved_face = face_out;
-    FT_UInt resolved_glyph_index = FT_Get_Char_Index(resolved_face, static_cast<FT_ULong>(code));
+    FT_UInt resolved_glyph_index = Gow3ButtonGlyphs::GlyphIndex(resolved_face, static_cast<FT_ULong>(code));
     if (resolved_glyph_index == 0) {
         for (const auto& fb : st.system_fallback_faces) {
             if (!fb.ready || !fb.ft_face) {

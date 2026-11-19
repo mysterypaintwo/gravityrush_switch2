@@ -132,6 +132,8 @@ static void publish(GuestThread *t) {
 }
 /* Host threads that call into guest code without being created by the guest
  * (the main thread, test threads) get a record on first use. */
+/* The calling guest thread's name, or NULL (diagnostics). */
+const char *runtime_thread_current_name(void) { return current ? current->name : NULL; }
 GuestThread *runtime_thread_current(void) {
     if (current) return current;
     GuestThread *t=new_thread();
@@ -333,6 +335,11 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     /* Windows places the stack itself (low: no high-entropy ASLR) and commits all of it:
      * guest code has no stack probes and would step over the guard page. */
     pthread_attr_setstacksize(&host,stack_bytes);
+#elif defined(__SWITCH__)
+    /* libnx places the stack (heap memory mirrored into the stack region, below 512 GiB):
+     * a stack in the low physical maps cannot be mirrored and creation fails with ENOMEM. */
+    stack_bytes=(stack_bytes+0xfff)&~(size_t)0xfff;
+    pthread_attr_setstacksize(&host,stack_bytes);
 #else
     void *stack_memory=runtime_low_map(stack_bytes,PROT_READ|PROT_WRITE);
     if (stack_memory) pthread_attr_setstack(&host,stack_memory,stack_bytes);
@@ -343,7 +350,7 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     *out=t;
     int e=pthread_create(&t->host,&host,host_start,t);
     pthread_attr_destroy(&host);
-    if (e) { fprintf(stderr,"STOP: host pthread_create failed: %d\n",e); exit(21); }
+    if (e) { fprintf(stderr,"STOP: host pthread_create failed: %d (thread '%s', stack %zu KiB)\n",e,t->name,stack_bytes>>10); exit(21); }
     if (t->detached) pthread_detach(t->host);
     pthread_mutex_lock(&lock); ++created; pthread_mutex_unlock(&lock);
     printf("Runtime: guest thread '%s' created (stack=%llu, prio=%d)\n",t->name,(unsigned long long)stack,t->attr.prio);

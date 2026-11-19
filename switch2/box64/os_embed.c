@@ -37,7 +37,9 @@ int GetTID(void)
 }
 
 int SchedYield(void) { return sched_yield(); }
+#ifndef __SWITCH__ /* libounce provides it on Horizon */
 int sched_getcpu(void) { return 0; }
+#endif
 
 /* --- bridges: int3 'S' 'C' wrapper function ret (box64e.c builds them) */
 int IsBridgeSignature(char s, char c) { return s == 'S' && c == 'C'; }
@@ -156,20 +158,29 @@ int DetectHostCpuFeatures(void)
     return 1;
 }
 
-/* --- time stamp counter: the ARM generic timer */
+/* --- time stamp counter: the ARM generic timer, less the host's suspended time */
+extern volatile uint64_t* box64e_tsc_offset;
 uint64_t ReadTSC(x64emu_t* emu)
 {
     (void)emu;
     uint64_t v;
+#ifdef __SWITCH__
+    __asm__ volatile("isb\n mrs %0, cntpct_el0" : "=r"(v)); /* Horizon: EL0 may read the physical counter (libnx's armGetSystemTick), not the virtual one */
+#else
     __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v));
-    return v;
+#endif
+    return box64e_tsc_offset ? v - *box64e_tsc_offset : v;
 }
 uint64_t ReadTSCFrequency(x64emu_t* emu)
 {
     (void)emu;
+#ifdef __SWITCH__
+    return 19200000; /* the Switch's system counter; cntfrq_el0 is not readable there either */
+#else
     uint64_t f;
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
     return f;
+#endif
 }
 
 /* --- random numbers (RDRAND/RDSEED) */

@@ -116,7 +116,7 @@ void Liverpool::Process(std::stop_token stoken) {
     Gow3Stats::gpu_thread_id.store(GetCurrentThreadId());
 #endif
     gpu_id = std::this_thread::get_id();
-#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
+#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__) || defined(__SWITCH__)
     gpu_tid = gettid();
 #endif
 
@@ -1354,7 +1354,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     }
     if (seq != NoSeq && Gow3Stats::enabled) {
         Gow3Stats::submissions.fetch_add(1, std::memory_order_relaxed);
-#ifndef _WIN32 // gow3: per-thread rusage statistics are Linux-only
+#if !defined(_WIN32) && !defined(__SWITCH__) // gow3: per-thread rusage statistics are Linux-only
         if (rusage usage{}; getrusage(RUSAGE_THREAD, &usage) == 0) {
             Gow3Stats::gpu_user_us.store(u64(usage.ru_utime.tv_sec) * 1000000 + usage.ru_utime.tv_usec,
                                        std::memory_order_relaxed);
@@ -1691,6 +1691,12 @@ Liverpool::CmdBuffer Liverpool::CopyCmdBuffers(std::span<const u32> dcb, std::sp
 
 void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     auto& queue = mapped_queues[GfxQueueId];
+#ifdef __SWITCH__
+    // gow3 (Switch 2): the guest's writes since the last submission (no faults on Horizon).
+    if (rasterizer) {
+        rasterizer->CheckGuestWrites();
+    }
+#endif
 
     if (EmulatorSettings.IsCopyGpuBuffers()) {
         std::tie(dcb, ccb) = CopyCmdBuffers(dcb, ccb);
@@ -1721,6 +1727,11 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
 void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
     ASSERT_MSG(gnm_vqid > 0 && gnm_vqid < NumTotalQueues, "Invalid virtual ASC queue index");
     auto& queue = mapped_queues[gnm_vqid];
+#ifdef __SWITCH__
+    if (rasterizer) {
+        rasterizer->CheckGuestWrites(); // gow3 (Switch 2): see SubmitGfx
+    }
+#endif
 
     const auto vqid = gnm_vqid - 1;
     const auto& task = ProcessCompute(acb, vqid);

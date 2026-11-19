@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -104,7 +105,11 @@ void SetOpen(bool value) {
     if (menu_open.exchange(value) == value) {
         return;
     }
+#ifdef __SWITCH__
+    ImGui::GetIO().MouseDrawCursor = false; // the touch screen: no pointer to show
+#else
     ImGui::GetIO().MouseDrawCursor = value;
+#endif
     if (value) {
         requested_tab = Gow3Settings::Get().menu_tab;
     }
@@ -285,6 +290,7 @@ std::string OverlayText() {
 void ImageTab() {
     namespace G = Gow3Graphics;
     auto& s = Gow3Settings::Get();
+#ifndef __SWITCH__ // Switch 2: one display at a fixed size (Gow3Settings::Load keeps the defaults)
     ImGui::SeparatorText("Display");
     if (BeginRows("##display")) {
         ChoiceRow("Display mode", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
@@ -292,6 +298,7 @@ void ImageTab() {
         CheckRow("VSync", s.vsync, "Waits for the monitor: no tearing, a little more input delay.");
         ImGui::EndTable();
     }
+#endif
     const int iw = s.image_width, ih = s.image_height, ww = s.window_width, wh = s.window_height;
     const bool upscaling = iw < ww && ih < wh;
     const bool downscaling = iw > ww || ih > wh;
@@ -303,8 +310,13 @@ void ImageTab() {
         static const char* const temporal_labels[] = {"Off", "TAA", "FSR 3.1", "DLAA (DLSS)"};
         static const int temporal_values[] = {Gow3Settings::UpscalerOff, Gow3Settings::UpscalerTaa,
                                               Gow3Settings::UpscalerFsr3, Gow3Settings::UpscalerDlss};
+#ifdef __SWITCH__
+        constexpr int temporal_count = 2; // Off and TAA: the others are not tested on the console
+#else
+        const int temporal_count = s.dlss_supported ? 4 : 3;
+#endif
         ChoiceRow("Temporal anti-aliasing", s.upscaler, temporal_labels, temporal_values,
-                  s.dlss_supported ? 4 : 3,
+                  temporal_count,
                   "Smooths edges over several frames, also on thin details FXAA misses. TAA is the "
                   "lightest; FSR 3.1 keeps more detail. Replaces FXAA while it runs.");
         ImGui::BeginDisabled(s.upscaler != Gow3Settings::UpscalerOff);
@@ -363,8 +375,10 @@ void PerformanceTab() {
         static const char* const labels[] = {"540p", "648p", "720p", "864p", "972p", "Native (1080p)",
                                              "1296p", "1440p", "1800p", "4K"};
         static const int values[] = {10, 11, 2, 12, 13, 0, 14, 3, 4, 5};
+#ifndef __SWITCH__ // Switch 2: no restart to apply it
         ChoiceRow("Render resolution", s.render_resolution, labels, values, 10,
                   "The size the game draws at. Above the screen's it works as anti-aliasing.");
+#endif
         CheckRow("Game reads GPU data without waiting", s.stale_readback,
                  "Big FPS gain. Switch it off if lighting or objects look wrong.");
         CheckRow("Deferred GPU readbacks", s.deferred_readback,
@@ -422,6 +436,34 @@ void OverlayTab() {
         std::snprintf(text, sizeof(text), "%.*s v%.*s", int(elf.GameSerial().size()), elf.GameSerial().data(),
                       int(elf.AppVer().size()), elf.AppVer().data());
         InfoRow("Game", text);
+        // The language and the A/B swap: chosen here for the next launch only (read once at start).
+        static const auto language_names = [] {
+            std::array<const char*, std::size(Gow3Settings::Languages)> names{};
+            for (size_t l = 0; l < names.size(); ++l) names[l] = Gow3Settings::Languages[l].name;
+            return names;
+        }();
+        static const auto language_codes = [] {
+            std::array<int, std::size(Gow3Settings::Languages)> codes{};
+            for (size_t l = 0; l < codes.size(); ++l) codes[l] = Gow3Settings::Languages[l].code;
+            return codes;
+        }();
+        ChoiceRow("Language (next launch)", Gow3Settings::Get().language, language_names.data(), language_codes.data(),
+                  int(language_codes.size()), "Takes effect when the game is launched again; the running game keeps its language.");
+        {
+            const char* now = std::getenv("GOW3_LANGUAGE");
+            const int code = now ? std::atoi(now) : -1;
+            const char* name = "unknown";
+            for (const auto& l : Gow3Settings::Languages) {
+                if (l.code == code) name = l.name;
+            }
+            std::snprintf(text, sizeof(text), "%s (code %d)", name, code);
+            InfoRow("Language now", text);
+        }
+#ifdef __SWITCH__
+        CheckRow("Swap A and B (next launch)", Gow3Settings::Get().swap_ab,
+                 "On: A is the PS4's cross (confirm) and B its circle, in the game and its prompts. "
+                 "Off: by position (B cross, A circle). Takes effect when the game is launched again.");
+#endif
         const u32 total = background_total;
         if (total) {
             std::snprintf(text, sizeof(text), "loading %u%%", u32(u64(background_done) * 100 / total));
@@ -1009,6 +1051,9 @@ bool HandleEvent(const SDL_Event& event) {
             return false;
         }
         const float density = PixelDensity(event.motion.windowID);
+#ifdef __SWITCH__
+        io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen); // the touch screen: a tap is a click
+#endif
         io.AddMousePosEvent(event.motion.x * density, event.motion.y * density);
         return true;
     }
@@ -1147,7 +1192,12 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     io.DisplaySize = ImVec2(float(extent.width), float(extent.height));
     io.DeltaTime = ms > 0.0f && ms < 1000.0f ? ms / 1000.0f : 1.0f / 60.0f;
     // UI scale follows the display height (1080p = 1).
+#ifdef __SWITCH__
+    // Switch 2: half as large again, for the handheld screen and touch.
+    const float scale = std::max(float(extent.height) / 1080.0f, 0.75f) * 1.5f;
+#else
     const float scale = std::max(float(extent.height) / 1080.0f, 0.75f);
+#endif
     if (std::abs(scale - base_scale) > 0.01f) {
         ImGuiStyle& style = ImGui::GetStyle();
         style.ScaleAllSizes(scale / base_scale);

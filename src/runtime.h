@@ -10,6 +10,10 @@ typedef gow3_jmp_buf sigjmp_buf;
 #define sigsetjmp(buffer, save) gow3_setjmp(buffer)
 #else
 #include <setjmp.h>
+#ifdef __SWITCH__
+/* No signals on Horizon (newlib has no sigjmp_buf): plain jumps (also in host_compat.h). */
+typedef jmp_buf sigjmp_buf;
+#endif
 #endif
 /* Recovery point for speculative guest memory reads on this thread (probe.c fault handler). */
 extern __thread sigjmp_buf *runtime_fault_recover;
@@ -126,6 +130,7 @@ int runtime_savedata_icon(int32_t user, const char *dir, char *out, size_t size)
 void runtime_thread_attach_host(const char *name);
 /* Name of a guest thread handle, or NULL when it is not a live thread. */
 const char *runtime_thread_name(void *handle);
+const char *runtime_thread_current_name(void);
 uint64_t runtime_memory_flexible_available(void);
 uintptr_t runtime_extra_resolve(const char *name);
 void runtime_extra_report(void);

@@ -15,7 +15,11 @@
 #include <math.h>
 #include <pthread.h>
 #include <time.h>
+#ifdef __SWITCH__
+#include "gr_sdl_horizon.h" /* SDL's gamepad API on the console's hid service */
+#else
 #include <SDL3/SDL.h>
+#endif
 #include <sys/stat.h>
 
 #define ERR_INVALID_ARG ((int32_t)0x80920001)
@@ -333,12 +337,13 @@ static void sample_motion(SDL_Gamepad *g, PadData *d) {
         if (motion_log<0) motion_log=getenv("GOW3_MOTION_LOG")!=NULL;
         if (motion_log && now>=next_log) {
             const float *q=motion.filter.q, *bias=motion.filter.bias;
-            printf("Motion: q %.4f %.4f %.4f %.4f (%.1f deg) bias %.4f %.4f %.4f tilt %d still %.1f s"
+            printf("Motion: sticks L %d,%d R %d,%d buttons 0x%x | q %.4f %.4f %.4f %.4f (%.1f deg) bias %.4f %.4f %.4f tilt %d still %.1f s"
                    " gyro %.4f %.4f %.4f accel %.3f %.3f %.3f dt %.4f\n",
+                   d->left_x,d->left_y,d->right_x,d->right_y,d->buttons,
                    q[0],q[1],q[2],q[3],2.0f*acosf(fminf(1.0f,fabsf(q[3])))*57.2958f,
                    bias[0],bias[1],bias[2],motion.tilt,motion.filter.still_s,
                    v[0],v[1],v[2],have_accel ? a[0] : 0.0f,have_accel ? a[1] : 0.0f,have_accel ? a[2] : 0.0f,dt);
-            next_log=now+2000000;
+            next_log=now+500000;
         }
     }
     scaled_orientation(motion.filter.q,sens,d->orientation);

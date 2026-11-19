@@ -52,6 +52,20 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.overlay_layout = i == 1 ? 1 : 0;
         return;
     }
+    if (key == "language") {
+        for (const auto& l : Languages) {
+            if (value == l.key) {
+                v.language = l.code;
+                return;
+            }
+        }
+        if (i >= 0 && i <= 30 && !value.empty() && value[0] >= '0' && value[0] <= '9') v.language = i; // an older numeric value
+        return;
+    }
+    if (key == "swap_ab") {
+        v.swap_ab = i != 0;
+        return;
+    }
     if (key == "menu_tab") {
         v.menu_tab = i >= 0 && i <= 2 ? i : 0;
         return;
@@ -156,6 +170,24 @@ void Load() {
         std::fclose(file);
         std::printf("Settings: %s\n", Path());
     }
+#ifdef __SWITCH__
+    // Switch 2: one display at a fixed size and no restart, so the window, refresh rate and
+    // resolution options keep their defaults (changing them crashed the game), and only the
+    // temporal anti-aliasing tested here is kept. Then every option is written back to
+    // options.ini, so the file lists them all (before the environment overrides below).
+    {
+        const Values defaults{};
+        v.display_mode = defaults.display_mode.load();
+        v.refresh_rate = defaults.refresh_rate.load();
+        v.vsync = true;
+        v.output_res = defaults.output_res.load();
+        v.render_resolution = defaults.render_resolution.load();
+        v.live_resolution = defaults.live_resolution.load();
+        v.restart_unconfirmed = false;
+        if (v.upscaler != UpscalerOff && v.upscaler != UpscalerTaa) v.upscaler = UpscalerOff;
+        Save();
+    }
+#endif
     // Environment overrides (scripts, A/B tests).
     if (const char* env = std::getenv("GOW3_UPSCALER")) {
         v.upscaler = UpscalerOff;
@@ -317,6 +349,10 @@ void Save() {
                  Gow3Graphics::Resolutions[std::clamp(v.render_resolution.load(), 0, int(Gow3Graphics::Resolutions.size()) - 1)].data(),
                  v.engine_fps.load(), int(v.deferred_readback.load()), int(v.stale_readback.load()),
                  int(v.restart_unconfirmed.load()));
+    // Read at launch (switch2/host/gr_switch.c); the menu changes them for the next launch.
+    std::fprintf(file, "# language: ENG, FRA, DEU, ITA, ESP, POR, RUS, POL, NLD or JPN (Japanese text)\n"
+                       "language=%s\n# swap_ab: 1 = A is the PS4's cross (confirm), B its circle; 0 = by position\nswap_ab=%d\n",
+                 LanguageKey(v.language.load()), int(v.swap_ab.load()));
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");

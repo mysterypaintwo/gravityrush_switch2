@@ -42,6 +42,12 @@ int runtime_is_guest_code(uintptr_t address) {
     return image && address >= (uintptr_t)image && address - (uintptr_t)image < image_size;
 }
 
+#ifdef __SWITCH__
+void gr_crumb(const char *what); /* gr_switch.c: boot.txt, kept through a crash */
+#define STEP(what) gr_crumb(what)
+#else
+#define STEP(what) ((void)0)
+#endif
 static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
 static uint64_t read64(FILE *f) {
     unsigned char b[8];
@@ -126,6 +132,7 @@ static __attribute__((noreturn)) void unresolved(x64emu_t *emu) {
 }
 
 /* --- faults (development host only: Horizon cannot catch them) */
+#ifndef __SWITCH__
 static void fault(int sig, siginfo_t *info, void *context) {
 #ifdef GR_HOST_GPU
     /* GPU page tracking: the library write-protects guest pages and unprotects them here
@@ -193,6 +200,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
     backtrace_symbols_fd(frames, backtrace(frames, 24), 2);
     _exit(128 + sig);
 }
+#endif
 
 /* --- param.sfo and patches, as in src/probe.c */
 static int sfo_value(const char *path, const char *key, char *text, size_t text_size, uint32_t *number) {
@@ -283,8 +291,43 @@ static void *game_thread(void *p) {
     HostArgs *a = p;
     exit(host_main(a->argc, a->argv));
 }
+/* GR_DYNAREC_TEST_TRIGGER=<file>: when the file appears (it is removed), Box64's dynarec test
+ * mode starts for every block translated from then on (Box64 prints the blocks whose results
+ * differ from the interpreter's). Starting it just before the part to check keeps the game
+ * fast up to there. The file may hold a guest address range "start-end" (hex) to test only. */
+static void *dynarec_test_watch(void *p) {
+    const char *path = p;
+    for (;;) {
+        usleep(250000);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        unsigned long long start = 0, end = 0;
+        char word[16] = "";
+        if (fscanf(f, "%15s", word) == 1 && !strcmp(word, "interp")) {
+            /* "interp": no more translation, new code runs in the interpreter */
+            fclose(f);
+            remove(path);
+            box64e_set_dynarec(0);
+            printf("Box64: dynarec off for code reached from now on\n");
+            fflush(stdout);
+            continue;
+        }
+        rewind(f);
+        if (fscanf(f, "%llx-%llx", &start, &end) != 2) start = end = 0;
+        fclose(f);
+        remove(path);
+        box64e_set_dynarec_test(1, (uintptr_t)start, (uintptr_t)end);
+        printf("Box64: dynarec test mode on (0x%llx-0x%llx)\n", start, end);
+        fflush(stdout);
+    }
+    return NULL;
+}
 int main(int argc, char **argv) {
     static HostArgs args;
+    if (getenv("GR_DYNAREC_TEST_TRIGGER")) {
+        pthread_t watch;
+        pthread_create(&watch, NULL, dynarec_test_watch, getenv("GR_DYNAREC_TEST_TRIGGER"));
+    }
     args = (HostArgs){argc, argv};
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -301,6 +344,11 @@ int main(int argc, char **argv) {
     for (;;) pause(); /* the game thread reports the failure and exits */
 }
 static int host_main(int argc, char **argv) {
+#elif defined(__SWITCH__)
+#define gpu_init gow3gpu_init
+/* The console's entry (gr_switch.c) sets up memory, files and the applet thread, then runs
+ * this on the game thread. */
+int gr_host_main(int argc, char **argv) {
 #else
 #define gpu_init gow3gpu_init
 int main(int argc, char **argv) {
@@ -326,14 +374,27 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+#ifndef __SWITCH__ /* the console never delivers memory faults to the process */
     struct sigaction sa = {0};
     sa.sa_sigaction = fault;
     sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL); sigaction(SIGILL, &sa, NULL);
+#endif
 
     box64e_jit jit;
-    if (box64e_jit_create((size_t)256 << 20, &jit) || box64e_init(&jit)) fail("Box64 initialization failed");
+    box64e_thread_name = runtime_thread_current_name;
+#ifdef __SWITCH__
+    { void gr_trace_hooks(void); gr_trace_hooks(); }
+#endif
+#ifdef __SWITCH__
+    /* Both of the JIT's views come from the fixed heap (2x this); the game uses about 24 MiB
+     * by the end of loading (heap report, 2026-11-18). */
+    const size_t jit_size = (size_t)128 << 20;
+#else
+    const size_t jit_size = (size_t)256 << 20;
+#endif
+    if (box64e_jit_create(jit_size, &jit) || box64e_init(&jit)) fail("Box64 initialization failed");
 
     if (content_profile) {
         FILE *profile = fopen(content_profile, "rb");
@@ -443,6 +504,18 @@ int main(int argc, char **argv) {
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
 
+    /* Console bring-up (GR_SWITCH_TEST, set by the start menu in gr_switch.c): "traps_first"
+     * allocates the import tables before the GPU library starts, "wait" pauses 5 s after it
+     * started. */
+    const char *test = getenv("GR_SWITCH_TEST");
+    uintptr_t *function_bridges = NULL;
+    if (test && !strcmp(test, "traps_first")) {
+        STEP("allocating import tables before the GPU library");
+        function_bridges = calloc(import_count ? import_count : 1, sizeof(*function_bridges));
+        data_traps = allocate((import_count + 1) * page_size);
+        STEP("import tables allocated");
+    }
+
 #ifdef GR_HOST_GPU
     if (!cpu_only) {
         char title[128] = "PS4 game", serial[16] = "UNKNOWN", sfo[4096];
@@ -459,11 +532,24 @@ int main(int argc, char **argv) {
     }
 #endif
 
+    STEP("GPU ready; bridging imports");
+    if (test && !strcmp(test, "wait")) {
+        for (int s = 1; s <= 5; ++s) {
+            sleep(1);
+            char line[48];
+            snprintf(line, sizeof line, "waited %d s after the GPU library started", s);
+            STEP(line);
+        }
+    }
     /* --- imports: the runtime's functions and unresolved imports become bridges */
-    uintptr_t *function_bridges = calloc(import_count ? import_count : 1, sizeof(*function_bridges));
-    data_traps = allocate((import_count + 1) * page_size);
+    if (!function_bridges) {
+        function_bridges = calloc(import_count ? import_count : 1, sizeof(*function_bridges));
+        STEP("import table allocated");
+        data_traps = allocate((import_count + 1) * page_size);
+    }
     mprotect(data_traps, (import_count + 1) * page_size, PROT_NONE);
     uint64_t bridged = 0, missing = 0;
+    STEP("import traps mapped");
     for (uint64_t i = 0; i < nr; ++i) {
         uint64_t index = relocs[i].value;
         uintptr_t value;
@@ -489,6 +575,7 @@ int main(int argc, char **argv) {
         memcpy(image + relocs[i].target, &value, 8);
     }
     printf("Imports: %" PRIu64 " bridged to the runtime, %" PRIu64 " not provided\n", bridged, missing);
+    STEP("imports bridged");
     if (check_imports) {
         for (uint64_t i = 0; i < import_count; ++i)
             if (function_bridges[i] && !runtime_resolve(names[i], 0))
@@ -513,6 +600,8 @@ int main(int argc, char **argv) {
             executable_entry = 1;
     }
     if (!executable_entry) fail("entry is not executable");
+    STEP("guest memory rights set");
+    box64e_trace_image = (uintptr_t)image;
     printf("Mapped %" PRIu64 " bytes at %p, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, (void *)image, ns, nr);
 
     /* --- module initializers (libc first, as the PS4 dynamic linker does) */

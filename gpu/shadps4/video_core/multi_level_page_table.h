@@ -68,7 +68,13 @@ public:
 
 private:
     std::vector<L1Page*> first_level_map{};
+#ifdef __SWITCH__
+    // gow3 (Switch 2): the pool's default first chunk is 1024 pages (88 MiB for the texture
+    // cache's table, allocated at once from the fixed heap); a few at a time instead.
+    Common::ObjectPool<L1Page> page_alloc{8};
+#else
     Common::ObjectPool<L1Page> page_alloc;
+#endif
 };
 
 } // namespace VideoCore

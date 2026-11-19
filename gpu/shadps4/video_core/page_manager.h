@@ -17,6 +17,7 @@ namespace VideoCore {
 
 struct UffdImpl;
 struct SignalImpl;
+struct HashImpl;
 
 class PageManager {
     // PAGE_SIZE and PAGE_BITS conflicts with machine/param.h definitions on freebsd!
@@ -37,6 +38,10 @@ public:
 
     /// Unregister a range of gpu memory that was unmapped.
     void OnGpuUnmap(VAddr address, size_t size);
+
+    /// gow3 (Switch 2): handles the guest writes to watched pages since the last call (no
+    /// faults on Horizon). Called before each submission; nothing to do elsewhere.
+    void CheckGuestWrites();
 
     /// Updates watches in the pages touching the specified region.
     template <bool track, bool is_read = false>
@@ -59,6 +64,7 @@ public:
 private:
     friend struct UffdImpl;
     friend struct SignalImpl;
+    friend struct HashImpl;
     struct Impl;
     std::unique_ptr<Impl> impl;
 };

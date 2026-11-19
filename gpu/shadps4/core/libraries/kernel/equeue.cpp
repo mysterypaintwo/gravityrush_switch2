@@ -18,7 +18,7 @@
 
 namespace Libraries::Kernel {
 
-extern boost::asio::io_context io_context;
+extern TimerAsio::io_context io_context;
 extern void KernelSignalRequest();
 
 static std::unordered_map<s32, EqueueInternal*> kqueues;
@@ -133,7 +133,7 @@ bool EqueueInternal::ScheduleEvent(u64 id, s16 filter,
            event.event.filter == OrbisKernelEvent::Filter::HrTimer);
 
     if (!it->timer) {
-        it->timer = std::make_unique<boost::asio::steady_timer>(io_context, event.timer_interval);
+        it->timer = std::make_unique<TimerAsio::steady_timer>(io_context, event.timer_interval);
     } else {
         // If the timer already exists we are scheduling a reoccurrence after the next period.
         // Set the expiration time to the previous occurrence plus the period.
@@ -141,9 +141,9 @@ bool EqueueInternal::ScheduleEvent(u64 id, s16 filter,
     }
 
     it->timer->async_wait(
-        [this, event_data = event.event, callback](const boost::system::error_code& ec) {
+        [this, event_data = event.event, callback](const TimerErrorCode& ec) {
             if (ec) {
-                if (ec != boost::system::errc::operation_canceled) {
+                if (!(ec == TimerCanceled)) {
                     LOG_ERROR(Kernel_Event, "Timer callback error: {}", ec.message());
                 } else {
                     // Timer was cancelled (removed) before it triggered

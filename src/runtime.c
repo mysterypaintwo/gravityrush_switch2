@@ -8,6 +8,9 @@
 #include <stdatomic.h>
 #include <sched.h>
 #include <pthread.h>
+#ifdef __SWITCH__
+#include <sys/random.h> /* switch2/host/horizon: the console CSPRNG */
+#endif
 
 typedef struct {
     union { GuestCallback plain; void (ABI *with_arg)(void *); } callback;
@@ -58,6 +61,8 @@ void runtime_start(uint64_t flags) {
     unsigned int halves[2];
     if (rand_s(&halves[0]) || rand_s(&halves[1])) { fputs("Cannot initialize stack canary\n", stderr); exit(1); }
     memcpy(&stack_canary, halves, sizeof(stack_canary));
+#elif defined(__SWITCH__)
+    getrandom(&stack_canary, sizeof(stack_canary), 0); /* no /dev/urandom on Horizon */
 #else
     FILE *random = fopen("/dev/urandom", "rb");
     if (!random || fread(&stack_canary, sizeof(stack_canary), 1, random) != 1) {

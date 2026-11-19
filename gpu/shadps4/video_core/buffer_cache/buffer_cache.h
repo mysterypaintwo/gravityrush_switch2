@@ -41,7 +41,14 @@ class BufferCache {
     // gow3: arena pages are 4 GiB unless the driver's buffer size limit is lower (AMD's
     // Windows driver: 2 GiB); an arena spans up to two pages, so they shrink to half the limit.
     static constexpr u64 MAX_ARENA_PAGE_BITS = 32;
+#ifdef __SWITCH__
+    // gow3 (Switch 2): no sparse buffers, so every arena is backed in full, from the same memory
+    // as everything else (the driver allocates GPU memory with malloc). 64 MiB arenas back only
+    // the guest ranges the game's buffers use; arenas a buffer straddles are merged.
+    static constexpr u64 MIN_ARENA_PAGE_BITS = 26;
+#else
     static constexpr u64 MIN_ARENA_PAGE_BITS = 30;
+#endif
     static constexpr u64 MAX_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - MIN_ARENA_PAGE_BITS);
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
 

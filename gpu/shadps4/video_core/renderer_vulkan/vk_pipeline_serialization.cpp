@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "gow3_bringup.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -453,6 +454,7 @@ struct PipelineCache::WarmupPool {
     explicit WarmupPool(u32 count, bool low_priority = false) {
         for (u32 i = 0; i < count; ++i) {
             threads.emplace_back([this, low_priority] {
+                GOW3_BRINGUP("pipeline pool thread: running");
                 if (low_priority) {
                     Common::SetCurrentThreadName("GoW3:ShaderWarmup");
                     Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);

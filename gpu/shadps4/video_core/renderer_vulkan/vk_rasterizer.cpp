@@ -21,6 +21,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "gow3_bringup.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "gow3_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -56,15 +57,18 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
       pipeline_cache{instance, scheduler, liverpool, buffer_cache.GetSparsePageShift()},
       host_markers_enabled{EmulatorSettings.IsVkHostMarkersEnabled()},
       guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
+    GOW3_GPU_SYNC(scheduler, "caches created");
     // Before the rasterizer is bound: Liverpool enqueues buffers only once it sees it.
     draw_prep = std::make_unique<DrawPreparation>(pipeline_cache);
     scene_targets = std::make_unique<SceneTargets>(instance, scheduler, runtime, texture_cache);
+    GOW3_GPU_SYNC(scheduler, "scene targets created");
     // Object motion first: it fixes the buffer addresses the motion shader variants embed.
     object_motion = std::make_unique<ObjectMotion>(instance, scheduler);
     camera_motion = std::make_unique<CameraMotion>(instance, scheduler, texture_cache, runtime);
     camera_motion->SetObjectMotion(object_motion.get());
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets);
+    GOW3_GPU_SYNC(scheduler, "motion and upscaler created");
     if (!EmulatorSettings.IsNullGPU()) {
         liverpool->BindRasterizer(this);
     }
@@ -83,6 +87,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
     });
+    GOW3_GPU_SYNC(scheduler, "rasterizer ready");
 }
 
 Rasterizer::~Rasterizer() = default;

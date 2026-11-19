@@ -10,6 +10,9 @@
 #ifdef _WIN32
 #include <bit>
 #include <windows.h>
+#elif defined(__SWITCH__)
+#include <bit>
+#include "horizon/gow3_switch.h"
 #else
 #include <sched.h>
 #include <sys/resource.h>
@@ -30,6 +33,20 @@ inline unsigned Available() {
 /// The calling thread only runs when cores are otherwise idle (lowest Windows priority).
 inline void MakeBackground() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
+}
+#elif defined(__SWITCH__)
+/// Cores the process may run on (the kernel's core mask for this process).
+inline unsigned Available() {
+    u64 mask = 0;
+    if (R_SUCCEEDED(svcGetInfo(&mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) && mask) {
+        return std::max(1, std::popcount(mask));
+    }
+    return 3;
+}
+
+/// The calling thread runs below the game's threads (Horizon priority 0x3b; 0x2c is the default).
+inline void MakeBackground() {
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3b);
 }
 #elif defined(__APPLE__)
 

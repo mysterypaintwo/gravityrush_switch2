@@ -11,7 +11,14 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#ifdef __SWITCH__
+#include "horizon/gow3_timers.h" // gow3 (Switch 2): the event queue's timers without asio
+namespace TimerAsio = Gow3Timers;
+#else
+#include <exception>
 #include <boost/asio/io_context.hpp>
+namespace TimerAsio = boost::asio;
+#endif
 #include "common/polyfill_thread.h"
 #include "video_core/renderdoc.h"
 #include <cstring>
@@ -30,7 +37,10 @@
 #include "core/memory.h"
 #include "core/signals.h"
 #include "sdl_window.h"
+#include "gow3_bringup.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_presenter.h"
+#include <vk_mem_alloc.h>
 
 extern "C" {
 // runtime_memory.c
@@ -211,6 +221,24 @@ static void StartProfileWriter() {
 #endif
 
 extern "C" int gow3gpu_init(const Gow3GpuConfig* config) {
+#ifdef __SWITCH__
+    // gow3 (Switch 2): an uncaught exception would end the game without a word (abort).
+    std::set_terminate([] {
+        const char* what = "(no exception)";
+        if (const auto e = std::current_exception()) {
+            try {
+                std::rethrow_exception(e);
+            } catch (const std::exception& ex) {
+                std::fprintf(stderr, "GPU: uncaught exception: %s\n", ex.what());
+                what = nullptr;
+            } catch (...) {
+                what = "(not a std::exception)";
+            }
+        }
+        if (what) std::fprintf(stderr, "GPU: std::terminate %s\n", what);
+        std::abort();
+    });
+#endif
     Gow3Settings::Load();
 #ifdef GOW3_PGO_GENERATE
     StartProfileWriter();
@@ -257,6 +285,14 @@ extern "C" int gow3gpu_init(const Gow3GpuConfig* config) {
     // GnmDriver creates the presenter that the VideoOut present thread uses.
     Libraries::GnmDriver::RegisterLib(&resolver);
     Libraries::VideoOut::RegisterLib(&resolver);
+#ifdef __SWITCH__
+    if (const char* v = std::getenv("GR_GPU_SYNC"); v && v[0] == '1') {
+        // Bring-up: whatever the GPU still runs from initialization, then 3 s of nothing.
+        gr_crumb("GPU library started: waiting 3 s");
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        gr_crumb("GPU library started: 3 s passed");
+    }
+#endif
     return 0;
 }
 
@@ -294,13 +330,41 @@ extern "C" int gow3gpu_handle_fault(void* ucontext, void* address) {
     return Core::Signals::Instance()->DispatchAccessViolation(ucontext, address) ? 1 : 0;
 }
 
+namespace VideoCore {
+extern std::atomic<u64> g_gow3_arena_bytes, g_gow3_arena_count;
+}
+extern std::unique_ptr<Vulkan::Presenter> presenter;
+/// Bring-up (Switch 2): GPU memory by Vulkan heap (VMA's budget: blocks the driver gave, bytes in
+/// use) and what the dense buffer arenas hold, one line to `line`.
+extern "C" void gow3gpu_memory_report(void (*line)(const char*)) {
+    if (!presenter || !line) {
+        return;
+    }
+    const VmaAllocator allocator = presenter->GetInstance().GetAllocator();
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+    vmaGetHeapBudgets(allocator, budgets);
+    const VkPhysicalDeviceMemoryProperties* props = nullptr;
+    vmaGetMemoryProperties(allocator, &props);
+    char out[240];
+    int n = std::snprintf(out, sizeof out, "gpu memory: arenas %llu MiB in %llu;",
+                          (unsigned long long)(VideoCore::g_gow3_arena_bytes.load() >> 20),
+                          (unsigned long long)VideoCore::g_gow3_arena_count.load());
+    for (u32 h = 0; props && h < props->memoryHeapCount && n < int(sizeof out) - 48; ++h) {
+        n += std::snprintf(out + n, sizeof out - size_t(n), " heap %u: %llu MiB blocks, %llu MiB used (%u allocations);", h,
+                           (unsigned long long)(budgets[h].statistics.blockBytes >> 20),
+                           (unsigned long long)(budgets[h].statistics.allocationBytes >> 20),
+                           budgets[h].statistics.allocationCount);
+    }
+    line(out);
+}
+
 extern "C" unsigned gow3gpu_symbol_count(void) {
     return unsigned(g_symbols.size());
 }
 
 // Kernel service thread: runs boost::asio timers for equeue timer events.
 namespace Libraries::Kernel {
-boost::asio::io_context io_context;
+TimerAsio::io_context io_context;
 static std::mutex m_asio_req;
 static std::condition_variable_any cv_asio_req;
 static std::atomic<u32> asio_requests;
@@ -314,12 +378,14 @@ void KernelSignalRequest() {
 
 static void KernelServiceThread(std::stop_token stoken) {
     Common::SetCurrentThreadName("gow3:kernel_service");
+    GOW3_BRINGUP("kernel service: running");
     while (!stoken.stop_requested()) {
         {
             std::unique_lock lock{m_asio_req};
             cv_asio_req.wait(lock, stoken, [] { return asio_requests != 0; });
         }
         if (stoken.stop_requested()) break;
+        GOW3_BRINGUP("kernel service: running timers");
         io_context.run();
         io_context.restart();
         asio_requests = 0;

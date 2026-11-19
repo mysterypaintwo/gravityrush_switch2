@@ -10,7 +10,11 @@ inline std::uint64_t Gow3ReadTsc() { return __rdtsc(); }
 #define GOW3_CPU_PAUSE() __asm__ volatile("yield" ::: "memory")
 inline std::uint64_t Gow3ReadTsc() {
     std::uint64_t v;
+#ifdef __SWITCH__
+    __asm__ volatile("isb\n mrs %0, cntpct_el0" : "=r"(v)); // the only counter EL0 may read there
+#else
     __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v));
+#endif
     return v;
 }
 #endif

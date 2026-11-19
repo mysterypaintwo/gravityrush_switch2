@@ -38,8 +38,13 @@ static inline u64 FencedRDTSC() {
     return (edx << 32) | eax;
 #elif defined(ARCH_ARM64)
     u64 ret;
+    // gow3 (Switch 2): EL0 may read only the physical counter there (libnx's armGetSystemTick).
     asm volatile("isb\n\t"
+#ifdef __SWITCH__
+                 "mrs %0, cntpct_el0\n\t"
+#else
                  "mrs %0, cntvct_el0\n\t"
+#endif
                  "isb\n\t"
                  : "=r"(ret)::"memory");
     return ret;

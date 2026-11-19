@@ -231,6 +231,14 @@ controller is untested). The GPU library runs on MoltenVK with Mac-only workarou
 buffer arenas, optional robustness2/nullDescriptor); GPU page tracking still uses faults
 there.
 
+**Console exit and GPU build (2026-11-18):** the NRO returns cleanly to the homebrew menu when
+every thread it created has ended, its stack is unmapped and its handle is closed
+(`switch2/host/gr_suspend_horizon.c`: cooperative quit points). The console build now includes
+the GPU library (`switch2/gpu_deps.sh` prepares Boost/fmt/robin-map headers and Zydis): window =
+default NWindow through VK_NN_vi_surface (`gpu/shim/horizon/`), no SDL, no asio (own timers),
+and page tracking by hashing watched pages before each submission (`page_manager.cpp`
+HashImpl), since faults cannot be caught. First console run pending.
+
 Console steps left before the game can start on the Switch 2:
 1. OunceVK (NVK) capability probe (`switch2/vkprobe`): v1 created an instance but found no
    GPU; v2 probes before the text console starts and keeps Mesa's log.
@@ -251,7 +259,8 @@ sce_module` (new option), then `prepare.py`, `link_libc.py`, `link_modules.py`,
 
 ## Phases
 
-0. **Console probe NRO** (`switch2/probe/`): print the address-space
+0. **Console probe NRO** (`switch2/probe/`, removed 2026-11-18 once its answers were in; see git
+   history): print the address-space
    regions, the memory totals, which svcs are allowed (MapPhysicalMemory,
    SetMemoryPermission, user exception handler), and JIT publish timings. The
    answers decide items 1–5.

@@ -19,7 +19,9 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#ifndef __SWITCH__
 #include <sys/syscall.h>
+#endif
 #include <sys/stat.h>
 #endif
 
@@ -172,6 +174,8 @@ static ABI int32_t thread_id(void) {
 #else
 #if defined(__APPLE__)
     uint64_t tid=0; pthread_threadid_np(NULL,&tid); return (int32_t)tid;
+#elif defined(__SWITCH__)
+    return (int32_t)compat_thread_id();
 #else
     return (int32_t)syscall(SYS_gettid);
 #endif

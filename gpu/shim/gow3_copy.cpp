@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gow3_copy.h"
+#include "gow3_bringup.h"
 #include "gow3_threads.h"
 
 #include <algorithm>
@@ -186,6 +187,7 @@ private:
 
     void Loop(unsigned index) {
         Common::SetCurrentThreadName(("gow3:Copy" + std::to_string(index)).c_str());
+        GOW3_BRINGUP("copy thread: running");
         u64 seen = 0;
         std::unique_lock lk{mutex};
         while (true) {

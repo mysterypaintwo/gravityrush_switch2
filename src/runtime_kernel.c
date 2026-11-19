@@ -45,6 +45,7 @@ static int32_t fail_posix(int e) { *runtime_errno()=runtime_guest_errno(e); retu
 
 /* ---- clocks and sleeping ---- */
 static struct timespec process_start;
+static void monotonic_now(struct timespec *t); /* CLOCK_MONOTONIC less the suspended time */
 __attribute__((constructor)) static void remember_start(void) { clock_gettime(CLOCK_MONOTONIC,&process_start); }
 static int host_clock(uint32_t id,clockid_t *out) {
     switch (id) {
@@ -61,7 +62,8 @@ static int clock_read(uint32_t id,GuestTimespec *ts) {
     clockid_t host;
     if (!ts || !host_clock(id,&host)) return EINVAL;
     struct timespec t;
-    if (clock_gettime(host,&t)) return errno;
+    if (host==CLOCK_MONOTONIC) monotonic_now(&t);
+    else if (clock_gettime(host,&t)) return errno;
     if (id==13) t.tv_nsec=0;
     ts->sec=t.tv_sec; ts->nsec=t.tv_nsec; return 0;
 }
@@ -78,22 +80,51 @@ static ABI int32_t posix_clock_getres(uint32_t id,GuestTimespec *ts) {
     if (ts) { ts->sec=t.tv_sec; ts->nsec=t.tv_nsec; }
     return 0;
 }
+/* Time the console spent suspended (HOME menu, sleep: switch2/host/gr_suspend_horizon.c), in
+ * generic timer ticks: taken out of the guest's monotonic clocks and TSC, so after a resume the
+ * game continues as if no time had passed (as a suspended PS4 game does). 0 on other hosts. */
+volatile uint64_t runtime_suspended_ticks;
+static void monotonic_now(struct timespec *t) {
+    clock_gettime(CLOCK_MONOTONIC,t);
+#if defined(__aarch64__)
+    const uint64_t ticks=runtime_suspended_ticks;
+    if (ticks) {
+#ifdef __SWITCH__
+        const uint64_t hz=19200000; /* the Switch's system counter (libnx's armGetSystemTickFreq) */
+#else
+        uint64_t hz; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+#endif
+        const uint64_t ns=(uint64_t)((unsigned __int128)ticks*1000000000u/hz);
+        uint64_t total=(uint64_t)t->tv_sec*1000000000u+(uint64_t)t->tv_nsec-ns;
+        t->tv_sec=(time_t)(total/1000000000u); t->tv_nsec=(long)(total%1000000000u);
+    }
+#endif
+}
 static ABI uint64_t process_time(void) {
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    struct timespec t; monotonic_now(&t);
     return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000+(uint64_t)((t.tv_nsec-process_start.tv_nsec)/1000);
 }
 static ABI uint64_t process_time_counter(void) {
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    struct timespec t; monotonic_now(&t);
     return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000000+(uint64_t)(t.tv_nsec-process_start.tv_nsec);
 }
 static ABI uint64_t process_time_frequency(void) { return 1000000000; }
 #if defined(__aarch64__)
 /* ARM64 hosts: the generic timer, which is also what Box64 returns for the guest's own RDTSC
  * (switch2/box64/os_embed.c), so sceKernelReadTsc and RDTSC share one clock and frequency. */
-static ABI uint64_t read_tsc(void) { uint64_t v; __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v)); return v; }
+#ifdef __SWITCH__
+/* Horizon: EL0 may read the physical counter (libnx's armGetSystemTick), not the virtual one: reading cntvct_el0 or cntfrq_el0 ends the process. */
+static ABI uint64_t read_tsc(void) { uint64_t v; __asm__ volatile("isb\n mrs %0, cntpct_el0" : "=r"(v)); return v-runtime_suspended_ticks; }
+#else
+static ABI uint64_t read_tsc(void) { uint64_t v; __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v)); return v-runtime_suspended_ticks; }
+#endif
 static uint64_t tsc_hz;
 static ABI uint64_t tsc_frequency(void) {
+#ifdef __SWITCH__
+    if (!tsc_hz) tsc_hz=19200000;
+#else
     if (!tsc_hz) __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(tsc_hz));
+#endif
     return tsc_hz;
 }
 #else
@@ -144,7 +175,7 @@ typedef struct { int32_t minuteswest, dsttime; } GuestTimezone;
 static ABI int32_t kernel_gettimezone(GuestTimezone *tz) {
     if (!tz) return ERR(22);
     time_t now=time(NULL);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__SWITCH__) /* compat_utc_offset: no tm_gmtoff */
     tz->minuteswest=(int32_t)(-compat_utc_offset(now)/60); tz->dsttime=0;
 #else
     struct tm local; localtime_r(&now,&local);

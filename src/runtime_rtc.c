@@ -69,7 +69,7 @@ static uint64_t now_utc(void) {
 /* Offset of local time from UTC at the given UTC tick, in microseconds. */
 static int64_t local_offset(uint64_t utc) {
     time_t seconds=(time_t)((int64_t)(utc-UNIX_EPOCH_TICKS)/1000000);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__SWITCH__) /* compat_utc_offset: no tm_gmtoff */
     return (int64_t)compat_utc_offset(seconds)*1000000;
 #else
     struct tm local;

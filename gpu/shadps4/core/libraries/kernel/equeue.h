@@ -7,7 +7,17 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#ifdef __SWITCH__
+#include "horizon/gow3_timers.h" // gow3 (Switch 2): no asio on newlib
+namespace TimerAsio = Gow3Timers;
+using TimerErrorCode = Gow3Timers::error_code;
+constexpr auto TimerCanceled = Gow3Timers::errc::operation_canceled;
+#else
 #include <boost/asio/steady_timer.hpp>
+namespace TimerAsio = boost::asio;
+using TimerErrorCode = boost::system::error_code;
+constexpr auto TimerCanceled = boost::system::errc::operation_canceled;
+#endif
 
 #include <unordered_map>
 #include "common/rdtsc.h"
@@ -87,7 +97,7 @@ struct EqueueEvent {
     void* data = nullptr;
     std::chrono::steady_clock::time_point time_added;
     std::chrono::nanoseconds timer_interval;
-    std::unique_ptr<boost::asio::steady_timer> timer;
+    std::unique_ptr<TimerAsio::steady_timer> timer;
 
     void Clear() {
         is_triggered = false;

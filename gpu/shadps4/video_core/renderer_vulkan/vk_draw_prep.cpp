@@ -2,6 +2,7 @@
 // gow3: speculative draw preparation on worker threads (see vk_draw_prep.h).
 
 #include <algorithm>
+#include "gow3_bringup.h"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -362,7 +363,9 @@ void DrawPreparation::Collect() {
 
 void DrawPreparation::ScannerLoop(std::stop_token stop) {
     Common::SetCurrentThreadName("gow3:DrawScan");
+    GOW3_BRINGUP("draw scanner: running");
     Gow3Threads::MakeBackground();
+    GOW3_BRINGUP("draw scanner: background priority set");
     std::unique_ptr<AmdGpu::Regs> regs;
     u64 checksum = 0;
     u64 next_seq = 0;
@@ -416,6 +419,7 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
 
 void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
     Common::SetCurrentThreadName(("gow3:DrawPrep" + std::to_string(index)).c_str());
+    GOW3_BRINGUP("draw preparation worker: running");
     Gow3Threads::MakeBackground();
     auto regs = std::make_unique<AmdGpu::Regs>();
     constexpr u64 NoPosition = ~0ull;

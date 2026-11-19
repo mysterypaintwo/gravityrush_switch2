@@ -1,5 +1,5 @@
 diff --git a/src/custommem.c b/src/custommem.c
-index d051998..865c302 100644
+index d051998..e72c8b9 100644
 --- a/src/custommem.c
 +++ b/src/custommem.c
 @@ -34,7 +34,8 @@
@@ -12,7 +12,86 @@ index d051998..865c302 100644
  static uint64_t jmptbl_allocated = 0, jmptbl_allocated1 = 0, jmptbl_allocated2 = 0;
  #if JMPTABL_SHIFTMAX != 16
  #error Incorect value for jumptable shift max that should be 16
-@@ -1619,9 +1620,13 @@ void DelMmaplist(mmaplist_t* list)
+@@ -569,25 +570,36 @@ void leave_critical_section(void) {}
+ #endif
+ 
+ static void setProtection_generic(uintptr_t addr, size_t sz, uint32_t prot, mem_flag_t flags);
++/* box64e: how many times this thread holds mutex_prot. A custom allocation made under the lock
++ * (protectDB's rb_set needing a new node block) must defer its setProtection: mutex_prot is not
++ * recursive, and where PTHREAD_MUTEX_ERRORCHECK is not supported (newlib on Horizon) locking it
++ * again waits forever instead of failing with EDEADLK. */
++static __thread int prot_held = 0;
++#define PROT_DEFER() (setting_prot || prot_held)
++
+ #define LOCK_PROT()               \
+     do {                          \
+         enter_critical_section(); \
+         mutex_lock(&mutex_prot);  \
++        ++prot_held;              \
+     } while (0)
+ 
+ #define LOCK_PROT_READ()          \
+     do {                          \
+         enter_critical_section(); \
+         mutex_lock(&mutex_prot);  \
++        ++prot_held;              \
+     } while (0)
+ 
+ #define LOCK_PROT_FAST()         \
+     do {                         \
+         mutex_lock(&mutex_prot); \
++        ++prot_held;             \
+     } while (0)
+ 
+ #define UNLOCK_PROT()                              \
+     do {                                           \
++        --prot_held;                               \
+         if (defered_prot_p) {                      \
+             uintptr_t p = defered_prot_p;          \
+             size_t sz = defered_prot_sz;           \
+@@ -605,12 +617,14 @@ static void setProtection_generic(uintptr_t addr, size_t sz, uint32_t prot, mem_
+ 
+ #define UNLOCK_PROT_READ()         \
+     do {                           \
++        --prot_held;               \
+         mutex_unlock(&mutex_prot); \
+         leave_critical_section();  \
+     } while (0)
+ 
+ #define UNLOCK_PROT_FAST()         \
+     do {                           \
++        --prot_held;               \
+         mutex_unlock(&mutex_prot); \
+     } while (0)
+ 
+@@ -738,7 +752,7 @@ void* map128_customMalloc(size_t size, int is32bits)
+     last_block_index = i;
+     last_block_index_map128 = i;
+     if(mapallmem) {
+-        if(setting_prot) {
++        if(PROT_DEFER()) {
+             // defer the setProtection...
+             defered_prot_p = (uintptr_t)p;
+             defered_prot_sz = allocsize;
+@@ -865,7 +879,7 @@ void* map64_customMalloc(size_t size, int is32bits)
+     last_block_index_map64 = i;
+ 
+     if (mapallmem) {
+-        if (setting_prot) {
++        if (PROT_DEFER()) {
+             defered_prot_p    = (uintptr_t)p;
+             defered_prot_sz   = allocsize;
+             defered_prot_prot = PROT_READ | PROT_WRITE;
+@@ -1008,7 +1022,7 @@ void* internal_customMalloc(size_t size, int is32bits)
+     last_block_index = i;
+     last_block_index_list = i;
+     if(mapallmem) {
+-        if(setting_prot) {
++        if(PROT_DEFER()) {
+             // defer the setProtection...
+             defered_prot_p = (uintptr_t)p;
+             defered_prot_sz = allocsize;
+@@ -1619,9 +1633,13 @@ void DelMmaplist(mmaplist_t* list)
      if(!list) return;
      for(int i=0; i<list->size; ++i)
          if(list->chunks[i]->size) {
@@ -28,7 +107,7 @@ index d051998..865c302 100644
              // the blocklist_t "chunk" structure is port of the memory map, so grab info before freing the memory
              // also need to include back the blocklist_t that is excluded from the blocklist tracking
              void* addr = list->chunks[i]->block - sizeof(blocklist_t);
-@@ -1648,6 +1653,7 @@ dynablock_t* FindDynablockFromNativeAddress(void* p)
+@@ -1648,6 +1666,7 @@ dynablock_t* FindDynablockFromNativeAddress(void* p)
      uintptr_t addr = (uintptr_t)p;
  
      blocklist_t* bl = (blocklist_t*)rb_get_64(rbt_dynmem, addr);
@@ -36,7 +115,7 @@ index d051998..865c302 100644
      if(bl) {
          // browse the map allocation as a fallback
          blockmark_t* sub = (blockmark_t*)bl->block;
-@@ -1764,7 +1770,7 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
+@@ -1764,7 +1783,7 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
                      if(rsize==list->chunks[i]->maxfree)
                          list->chunks[i]->maxfree = getMaxFreeBlock(list->chunks[i]->block, list->chunks[i]->size, list->chunks[i]->first);
                      //rb_set_64(list->chunks[i].tree, (uintptr_t)ret, (uintptr_t)ret+size, (uintptr_t)ret);
@@ -45,7 +124,7 @@ index d051998..865c302 100644
                  }
              }
          }
-@@ -1798,13 +1804,20 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
+@@ -1798,13 +1817,20 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
          else printf_log(LOG_INFO, "Failed to allocated a dynarec memory block with HugeTLB (%s)\n", strerror(errno));
      }
      #endif
@@ -67,7 +146,7 @@ index d051998..865c302 100644
      madvise(p, allocsize, MADV_HUGEPAGE);
      #endif
  #ifdef TRACE_MEMSTAT
-@@ -1815,8 +1828,10 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
+@@ -1815,8 +1841,10 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
          dynarec_log(LOG_NONE, "Custommem: allocation %p-%p for Dynarec %p->chunk[%d]\n", p, p+allocsize, list, i);
  #endif
      setProtection_box((uintptr_t)p, allocsize, PROT_READ | PROT_WRITE | PROT_EXEC);
@@ -79,7 +158,7 @@ index d051998..865c302 100644
      p = p + sizeof(blocklist_t);    // adjust pointer and size, to exclude blocklist_t itself
      allocsize-=sizeof(blocklist_t);
      list->chunks[i]->block = p;
-@@ -1836,7 +1851,7 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
+@@ -1836,7 +1864,7 @@ uintptr_t AllocDynarecMap(uintptr_t x64_addr, size_t size, int is_new)
      if(list->chunks[i]->maxfree)
          list->chunks[i]->first = getNextFreeBlock(m);
      //rb_set_64(list->chunks[i].tree, (uintptr_t)ret, (uintptr_t)ret+size, (uintptr_t)ret);
@@ -88,7 +167,7 @@ index d051998..865c302 100644
  }
  
  void FreeDynarecMap(uintptr_t addr)
-@@ -1848,7 +1863,7 @@ void FreeDynarecMap(uintptr_t addr)
+@@ -1848,7 +1876,7 @@ void FreeDynarecMap(uintptr_t addr)
      blocklist_t* bl = (blocklist_t*)rb_get_64(rbt_dynmem, addr);
  
      if(bl) {
@@ -97,7 +176,7 @@ index d051998..865c302 100644
          size_t newfree = freeBlock(bl->block, bl->size, sub, &bl->first);
          if(bl->maxfree < newfree)
              bl->maxfree = newfree;
-@@ -2313,6 +2328,13 @@ void protectDBJumpTable(uintptr_t addr, size_t size, void* jump, void* ref)
+@@ -2313,6 +2341,13 @@ void protectDBJumpTable(uintptr_t addr, size_t size, void* jump, void* ref)
  }
  
  // Remove the Write flag from an adress range, so DB can be executed safely
@@ -111,7 +190,7 @@ index d051998..865c302 100644
  void protectDB(uintptr_t addr, uintptr_t size)
  {
      dynarec_log(LOG_DEBUG, "protectDB %p -> %p\n", (void*)addr, (void*)(addr+size-1));
-@@ -2346,10 +2368,10 @@ void protectDB(uintptr_t addr, uintptr_t size)
+@@ -2346,10 +2381,10 @@ void protectDB(uintptr_t addr, uintptr_t size)
                              dynarec_log(LOG_INFO, "protectDB: mixed code+data host page %p, using always_test instead of mprotect\n", (void*)host_page);
                              prot |= PROT_NEVERCLEAN;
                          } else {
@@ -684,3 +763,16 @@ index 3834e72..20450b8 100644
      sysinfo_t info = { 0 };
      readCpuinfo(&box64_sysinfo);
  
+diff --git a/src/tools/env.c b/src/tools/env.c
+index 0ca525d..2981fcb 100644
+--- a/src/tools/env.c
++++ b/src/tools/env.c
+@@ -398,7 +398,7 @@ static void pushNewEntry(const char* name, box64env_t* env, int wildcard)
+ 
+ static void internalApplyEnvFileEntry(const char* entryname, const box64env_t* env);
+ 
+-#ifdef ANDROID
++#if defined(ANDROID) || defined(__SWITCH__)
+ static int shm_open(const char *name, int oflag, mode_t mode) {
+     return -1;
+ }

@@ -4,6 +4,17 @@
 #include "common/arch.h"
 #include "common/signal_context.h"
 
+#ifdef __SWITCH__
+// gow3 (Switch 2): Horizon does not deliver faults to the process (switch2/PLAN.md), so there is
+// never a fault context to read.
+namespace Common {
+void* GetXmmPointer(void*, u8) { return nullptr; }
+void* GetRip(void*) { return nullptr; }
+void IncrementRip(void*, u64) {}
+bool IsWriteError(void*) { return false; }
+} // namespace Common
+#else
+
 #ifdef _WIN32
 #include <windows.h>
 #elif defined(__FreeBSD__)
@@ -48,3 +59,5 @@ bool IsWriteError(void* ctx) {
 }
 
 } // namespace Common
+
+#endif // __SWITCH__

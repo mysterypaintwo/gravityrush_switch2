@@ -13,7 +13,26 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+/* Audio sink: one stream per port. SDL3 on the PC and the Mac; audout with a small mixer on
+ * the Switch 2 (gr_audio_horizon.h). sink_queued counts bytes of the port's own format. */
+#ifdef __SWITCH__
+#include "gr_audio_horizon.h"
+#define SINK_NAME "audout"
+#else
 #include <SDL3/SDL.h>
+typedef SDL_AudioStream AudioSink;
+static int sink_start(void) { return SDL_InitSubSystem(SDL_INIT_AUDIO); }
+static AudioSink *sink_open(int is_float, int channels) {
+    SDL_AudioSpec spec={is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, channels, 48000};
+    AudioSink *s=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
+    if (s) SDL_ResumeAudioStreamDevice(s);
+    return s;
+}
+static void sink_close(AudioSink *s) { SDL_DestroyAudioStream(s); }
+static int sink_queued(AudioSink *s) { return SDL_GetAudioStreamQueued(s); }
+static void sink_put(AudioSink *s, const void *data, int bytes) { SDL_PutAudioStreamData(s,data,bytes); }
+#define SINK_NAME SDL_GetCurrentAudioDriver()
+#endif
 
 #define PORTS 25
 #define ERR_NOT_OPENED ((int32_t)0x80260001)
@@ -33,7 +52,7 @@ typedef struct {
     int used, type, channels, is_float, frames, sample_bytes, std_layout;
     int downmix;               /* 8 channels mixed down to a stereo device here */
     int32_t volume[8];
-    SDL_AudioStream *stream;
+    AudioSink *stream;
     uint64_t next_deadline_ns; /* next return of sceAudioOutOutput */
     unsigned trace_count;      /* GOW3_AUDIO_TRACE sampling */
     int64_t adjust_ns; int window_min, window_count; /* queue level control */
@@ -54,7 +73,7 @@ static size_t buffers_out, ports_opened;
 
 static uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000000u+(uint64_t)t.tv_nsec; }
 static void sleep_until(uint64_t deadline) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__SWITCH__) /* no absolute monotonic sleep: sleep the difference */
     /* winpthreads' clock_nanosleep only takes CLOCK_REALTIME (EINVAL otherwise). */
     for (uint64_t now=now_ns(); now<deadline; now=now_ns()) compat_sleep_ns(deadline-now);
 #else
@@ -65,14 +84,18 @@ static void sleep_until(uint64_t deadline) {
 static int sdl_audio(void) {
     if (sdl_ready<0) {
         const char *mode=getenv("GOW3_AUDIO");
-        sdl_ready = (!mode || strcmp(mode,"none")) && SDL_InitSubSystem(SDL_INIT_AUDIO);
-        printf("Runtime: audio backend %s\n", sdl_ready ? SDL_GetCurrentAudioDriver() : "timer (silent)");
+        sdl_ready = (!mode || strcmp(mode,"none")) && sink_start();
+        printf("Runtime: audio backend %s\n", sdl_ready ? SINK_NAME : "timer (silent)");
+#ifdef __SWITCH__
+        device_channels=2; /* the mixer's output: 8-channel ports are mixed down here */
+#else
         SDL_AudioSpec device;
         int frames=0;
         if (sdl_ready && SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&device,&frames)) {
             device_channels=device.channels;
             printf("Runtime: audio device: %d channels, %d Hz, %d frames\n",device.channels,device.freq,frames);
         }
+#endif
     }
     return sdl_ready;
 }
@@ -126,10 +149,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
         /* GOW3_DOWNMIX=sdl leaves the 8 to 2 channel downmix to SDL (quieter). */
         const char *mix=getenv("GOW3_DOWNMIX");
         p->downmix=p->channels==8 && device_channels==2 && !(mix && !strcmp(mix,"sdl"));
-        SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, p->downmix ? 2 : p->channels, 48000};
-        p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
-        if (p->stream) SDL_ResumeAudioStreamDevice(p->stream);
-        else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
+        p->stream=sink_open(p->is_float,p->downmix ? 2 : p->channels);
+        if (!p->stream) fprintf(stderr,"Runtime: audio stream failed; port %d uses the timer sink\n",id);
     }
     p->stats=getenv("GOW3_AUDIO_STATS")!=NULL;
     const char *dump=getenv("GOW3_AUDIO_DUMP");
@@ -149,7 +170,7 @@ static ABI int32_t audio_close(int32_t handle) {
     Port *p=port_of(handle,&error);
     if (p) {
         pthread_mutex_lock(&p->lock);
-        if (p->stream) SDL_DestroyAudioStream(p->stream);
+        if (p->stream) sink_close(p->stream);
         if (p->dump) fclose(p->dump);
         p->dump=NULL;
         p->stream=NULL; p->used=0;
@@ -227,7 +248,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
             else if (now-p->stat_last_ns>p->stat_max_gap_ns) p->stat_max_gap_ns=now-p->stat_last_ns;
             p->stat_last_ns=now; ++p->stat_buffers;
             if (p->stream) {
-                int queued=SDL_GetAudioStreamQueued(p->stream);
+                int queued=sink_queued(p->stream);
                 if (queued<p->stat_min_queued) p->stat_min_queued=queued;
                 if (queued==0) ++p->stat_starved;
             }
@@ -247,10 +268,10 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
         if (p->stream) {
             /* The device drains the queue in quanta (21 ms on PipeWire), so the level
                is a sawtooth: its minimum over ~32 buffers is what gets controlled. */
-            int low=2*(int)out_bytes, queued=SDL_GetAudioStreamQueued(p->stream);
+            int low=2*(int)out_bytes, queued=sink_queued(p->stream);
             if (queued<(int)out_bytes) {
                 static const unsigned char silence[2048*8*4];
-                SDL_PutAudioStreamData(p->stream,silence,low-queued<(int)out_bytes ? low-queued : (int)out_bytes);
+                sink_put(p->stream,silence,low-queued<(int)out_bytes ? low-queued : (int)out_bytes);
                 queued=low;
             }
             if (!p->window_count || queued<p->window_min) p->window_min=queued;
@@ -259,7 +280,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 p->window_count=0;
             }
             p->next_deadline_ns+=(uint64_t)p->adjust_ns;
-            SDL_PutAudioStreamData(p->stream,converted,(int)out_bytes);
+            sink_put(p->stream,converted,(int)out_bytes);
         }
         ++buffers_out;
     }
