@@ -167,9 +167,13 @@ struct HwGeometryRuntimeInfo {
     AmdGpu::GsScenario mode;
     std::span<const u32> vs_copy;
     u64 vs_copy_hash;
+    /// gow3: as for the vertex stage, -w..w depth made 0..w at each emitted vertex when the
+    /// driver lacks VK_EXT_depth_clip_control (the Switch 2's).
+    bool emulate_depth_negative_one_to_one{};
 
     bool operator==(const HwGeometryRuntimeInfo& other) const {
-        return num_outputs == other.num_outputs && outputs == other.outputs && num_invocations &&
+        return emulate_depth_negative_one_to_one == other.emulate_depth_negative_one_to_one &&
+               num_outputs == other.num_outputs && outputs == other.outputs && num_invocations &&
                other.num_invocations && output_vertices == other.output_vertices &&
                in_primitive == other.in_primitive &&
                std::ranges::equal(out_primitive, other.out_primitive) &&

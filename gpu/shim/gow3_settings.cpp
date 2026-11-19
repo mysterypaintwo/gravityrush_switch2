@@ -66,6 +66,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.swap_ab = i != 0;
         return;
     }
+    if (key == "gyro") {
+        v.gyro = !(value == "off" || value == "0");
+        return;
+    }
     if (key == "menu_tab") {
         v.menu_tab = i >= 0 && i <= 2 ? i : 0;
         return;
@@ -351,8 +355,9 @@ void Save() {
                  int(v.restart_unconfirmed.load()));
     // Read at launch (switch2/host/gr_switch.c); the menu changes them for the next launch.
     std::fprintf(file, "# language: ENG, FRA, DEU, ITA, ESP, POR, RUS, POL, NLD or JPN (Japanese text)\n"
-                       "language=%s\n# swap_ab: 1 = A is the PS4's cross (confirm), B its circle; 0 = by position\nswap_ab=%d\n",
-                 LanguageKey(v.language.load()), int(v.swap_ab.load()));
+                       "language=%s\n# swap_ab: 1 = A is the PS4's cross (confirm), B its circle; 0 = by position\nswap_ab=%d\n"
+                       "# gyro: on = the console's motion sensors reach the game (camera aiming); off = none\ngyro=%s\n",
+                 LanguageKey(v.language.load()), int(v.swap_ab.load()), v.gyro.load() ? "on" : "off");
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");

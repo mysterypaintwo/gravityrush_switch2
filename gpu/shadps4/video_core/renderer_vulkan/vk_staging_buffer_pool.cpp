@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include "gow3_toggles.h"
 #include <algorithm>
 #include <bit>
@@ -25,8 +26,15 @@ namespace {
 // ~2 ms per 16 MiB block. Streaming bursts a few seconds apart re-created the blocks trimmed
 // in between and copies into them ran at 0.3 GB/s (stutter). Blocks now live 30 s idle, the
 // upload ring keeps GOW3_STAGING_KEEP_MB (512) and is populated at startup.
+#ifdef __SWITCH__
+// gow3 (Switch 2): GPU memory comes from the fixed heap, so idle staging memory (each texture
+// upload's, as large as the texture) goes after ~2 s instead of ~50 s.
+constexpr u64 RING_IDLE_FRAMES = 120;
+constexpr u64 LARGE_IDLE_FRAMES = 120;
+#else
 constexpr u64 RING_IDLE_FRAMES = 3000;
 constexpr u64 LARGE_IDLE_FRAMES = 3000;
+#endif
 constexpr u64 PREWARM_BLOCKS = 8;
 constexpr u64 LARGE_MIN_GRANULARITY = 64_KB;
 constexpr u64 BLOCK_SIZE = 16_MB;
@@ -159,6 +167,9 @@ void StagingBufferPool::FreeDeferred(const StagingBufferRef& ref) {
     it->last_used_frame = frame;
 }
 
+// gow3: staging memory held (gow3gpu_memory_report).
+std::atomic<u64> g_gow3_staging_bytes{};
+
 void StagingBufferPool::TickFrame() {
     ++frame;
     for (Ring& ring : rings) {
@@ -168,6 +179,17 @@ void StagingBufferPool::TickFrame() {
         TrimLarge(cache);
     }
     PublishStats();
+    // gow3: the pool's size for gow3gpu_memory_report (Switch 2 bring-up), every 60 frames.
+    if (frame % 60 == 0) {
+        u64 bytes = 0;
+        for (const Ring& ring : rings) {
+            for (const Block& block : ring.blocks) bytes += block.buffer->SizeBytes();
+        }
+        for (const auto& cache : large_caches) {
+            for (const LargeBuffer& entry : cache) bytes += entry.buffer->SizeBytes();
+        }
+        g_gow3_staging_bytes.store(bytes, std::memory_order_relaxed);
+    }
 }
 
 void StagingBufferPool::TrimRing(Ring& ring) {

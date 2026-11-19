@@ -50,9 +50,32 @@ else
     echo "warning: no args.txt in $game; the game will start in Japanese (gravityrush_remastered.nro writes one for the European release)"
 fi
 
-if [[ -f out/gr_switch/gravityrush_remastered.nro ]]; then
-    cp out/gr_switch/gravityrush_remastered.nro "$dest/"
-    echo "== gravityrush_remastered.nro copied"
+# The homebrew menu icon: your game's own icon (sce_sys/icon0.png) as a 256x256 JPEG, put into the
+# NRO copied to the SD card (the built NRO has none: no game art is in the repository or the build).
+# Needs elf2nro (devkitPro tools) and sips (macOS), ImageMagick or Python's Pillow; without them the
+# NRO is copied as built.
+make_icon() {
+    local png="$game/sce_sys/icon0.png" jpg="$1"
+    [[ -f "$png" ]] || return 1
+    if command -v sips >/dev/null; then
+        sips -s format jpeg -s formatOptions 90 -z 256 256 "$png" --out "$jpg" >/dev/null 2>&1 && return 0
+    fi
+    if command -v magick >/dev/null; then magick "$png" -resize 256x256! -quality 90 "$jpg" && return 0; fi
+    if command -v convert >/dev/null; then convert "$png" -resize 256x256! -quality 90 "$jpg" && return 0; fi
+    "$PY" -I -c 'import sys; from PIL import Image; Image.open(sys.argv[1]).convert("RGB").resize((256, 256), Image.LANCZOS).save(sys.argv[2], quality=90)' "$png" "$jpg" 2>/dev/null
+}
+elf2nro=$(command -v elf2nro || echo "${DEVKITPRO:-/opt/devkitpro}/tools/bin/elf2nro")
+built=out/gr_switch/gravityrush_remastered
+if [[ -f $built.nro ]]; then
+    icon=$(mktemp -d)/icon.jpg
+    if [[ -f $built.elf && -f $built.nacp && -x "$elf2nro" ]] && make_icon "$icon" &&
+        "$elf2nro" "$built.elf" "$dest/gravityrush_remastered.nro" --icon="$icon" --nacp="$built.nacp" >/dev/null; then
+        echo "== gravityrush_remastered.nro copied, with your game's icon"
+    else
+        cp $built.nro "$dest/"
+        echo "== gravityrush_remastered.nro copied (without an icon: see switch2/SETUP.txt)"
+    fi
+    rm -rf -- "$(dirname -- "$icon")"
 else
     echo "== gravityrush_remastered.nro is not built yet: copy it to $dest/ when it is"
 fi

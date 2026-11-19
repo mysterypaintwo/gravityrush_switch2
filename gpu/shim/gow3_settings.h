@@ -70,6 +70,9 @@ struct Values {
     /// Switch 2: A is the PS4's cross (confirm) and B its circle, prompts too (next launch; off:
     /// by position, B cross and A circle).
     std::atomic<bool> swap_ab{false};
+    /// Switch 2: the motion sensors reach the game (next launch; off: the controller reads as
+    /// lying still, GOW3_GYRO=0).
+    std::atomic<bool> gyro{true};
     // Graphics (gow3_graphics.h). Live: applied on the next frame.
     std::atomic<int> display_mode{1}; // borderless by default
     /// Exclusive fullscreen refresh rate in Hz; 0 keeps the desktop's.

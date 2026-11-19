@@ -2,6 +2,7 @@
 // gow3: Switch button prompts (see gow3_button_glyphs.h).
 #include "gow3_button_glyphs.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -181,14 +182,37 @@ bool IsGaijiFace(FT_Face face) {
 
 } // namespace
 
+// Bring-up: each font face the game draws with, once, and the first prompt replaced, so the log
+// shows whether prompts reach this (the gaiji font) or are drawn some other way.
+void NoteFace(FT_Face face, FT_ULong code) {
+    static std::mutex note_mutex;
+    static std::vector<FT_Face> seen;
+    std::scoped_lock lock{note_mutex};
+    if (std::find(seen.begin(), seen.end(), face) != seen.end() || seen.size() > 64) {
+        return;
+    }
+    seen.push_back(face);
+    std::printf("Button glyphs: the game draws with font '%s' (%s), first character U+%04lX\n",
+                face->family_name ? face->family_name : "?", face->style_name ? face->style_name : "?",
+                (unsigned long)code);
+}
+
 FT_UInt GlyphIndex(FT_Face& face, FT_ULong code) {
     if (!face) {
         return 0;
     }
+    NoteFace(face, code);
     if (code < 0x80 && IsGaijiFace(face)) {
         if (const FT_ULong button = MapCode(code)) {
             if (FT_Face ext = ExtFaceFor(face->glyph->library)) {
                 if (const FT_UInt gi = FT_Get_Char_Index(ext, button)) {
+                    // Bring-up: each prompt character's first three replacements, so the log
+                    // shows whether a prompt on screen came through here (or is a picture).
+                    static std::atomic<unsigned> told[128]{};
+                    if (told[code & 127].fetch_add(1) < 3) {
+                        std::printf("Button glyphs: prompt '%c' drawn as U+%04lX\n", char(code),
+                                    (unsigned long)button);
+                    }
                     face = ext;
                     return gi;
                 }

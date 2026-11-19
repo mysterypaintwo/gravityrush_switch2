@@ -218,6 +218,10 @@ void EmitDiscardCond(EmitContext& ctx, Id condition) {
 }
 
 void EmitEmitVertex(EmitContext& ctx) {
+    if (ctx.hw_stage == HwStage::Geometry &&
+        ctx.runtime_info.hw.gs.emulate_depth_negative_one_to_one) {
+        ConvertDepthMode(ctx); // gow3: see HwGeometryRuntimeInfo
+    }
     ctx.OpEmitVertex();
 }
 

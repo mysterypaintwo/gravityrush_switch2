@@ -349,6 +349,16 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     /* Publish the handle before the thread can run and inspect itself. */
     *out=t;
     int e=pthread_create(&t->host,&host,host_start,t);
+#ifdef __SWITCH__
+    /* On the console a creation can fail for a moment (ENOMEM: the stack's mapping refused,
+     * seen once at boot together with a refused JIT publish), so it is tried again for ~1 s. */
+    for (int retry=0; e==ENOMEM && retry<20; ++retry) {
+        struct timespec pause={0,50*1000*1000};
+        nanosleep(&pause,NULL);
+        e=pthread_create(&t->host,&host,host_start,t);
+        if (!e) fprintf(stderr,"Runtime: thread '%s' created on try %d\n",t->name,retry+2);
+    }
+#endif
     pthread_attr_destroy(&host);
     if (e) { fprintf(stderr,"STOP: host pthread_create failed: %d (thread '%s', stack %zu KiB)\n",e,t->name,stack_bytes>>10); exit(21); }
     if (t->detached) pthread_detach(t->host);

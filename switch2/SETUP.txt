@@ -56,8 +56,14 @@ Settings are in switch/gravityrush_remastered/options.ini, written on the first 
 the in-game menu (hold ZL and click the right stick; tap it or use the D-pad and buttons):
   language=ENG    ENG, FRA, DEU, ITA, ESP, POR, RUS, POL, NLD or JPN
   swap_ab=0       1: A confirms (the PS4's cross) and B cancels; 0: by position (B confirms)
-Both apply the next time the game starts. The folder is not the
+  gyro=on         off: the game gets no motion sensor data (tilting the console no longer aims the camera)
+All three apply the next time the game starts. The folder is not the
 one the Gravity Rush (PS Vita) port uses (switch/gravityrush/), so both can be installed.
 
 
 Never share the prep/ or game/ folders: they are made from, or are, the game itself.
+
+Homebrew menu icon: prepare_sd.sh (or prepare_sd.ps1) puts your game's own icon
+(game/sce_sys/icon0.png) into the NRO it copies to the SD card. It needs devkitPro's elf2nro, and on
+macOS sips (built in), elsewhere ImageMagick or Python's Pillow. Without them the NRO is copied
+without an icon. The icon is never part of the repository or the build.

@@ -305,6 +305,10 @@ static void scaled_orientation(const float q[4], float sens, float out[4]) {
     out[0]=q[0]*k; out[1]=q[1]*k; out[2]=q[2]*k; out[3]=cosf(half);
 }
 static void sample_motion(SDL_Gamepad *g, PadData *d) {
+    /* GOW3_GYRO=0 (options.ini gyro=off): the controller reads as lying still. */
+    static int gyro_on=-1;
+    if (gyro_on<0) { const char *e=getenv("GOW3_GYRO"); gyro_on=!(e && !strcmp(e,"0")); if (!gyro_on) puts("Runtime: motion sensors off (gyro=off)"); }
+    if (!gyro_on) return;
     if (g!=motion.pad) {
         motion.pad=g;
         motion.gyro=SDL_GamepadHasSensor(g,SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(g,SDL_SENSOR_GYRO,true);
@@ -627,6 +631,63 @@ static void fake_motion(PadData *d) {
         memcpy(d->orientation,q,sizeof(q));
     }
 }
+
+/* Movement diagnostics: the ground camera (PlayerCamera, eboot 0x98440, the update that calls
+ * 0x986b0 and 0x98b90) is entered with the camera in rdi. Its first bytes jump to a cave in the
+ * free tail of the code segment that keeps that pointer and counts the runs in the free tail of the
+ * data segment, then goes on. The camera's position is at +0x10, the point it looks at (by the
+ * player) at +0x170, the turning speeds pitch +0x220 and yaw +0x224 (gr_mouse_camera.inc). The
+ * game's input state (eboot 0x912d0 returns it) holds the values the cameras read at +0x3c0..
+ * Twice a second while a stick is off centre, one "Move:" line: the sticks as sent, the motion
+ * data, the game's input values and the camera. GOW3_MOVE_LOG=0 turns it off. */
+#define PROBE_ENTRY 0x98440u
+#define PROBE_RESUME 0x98446u
+#define PROBE_CAVE 0x15e7900u  /* the code segment ends at 0x15e785c, its page at 0x15e8000 */
+#define PROBE_SLOT 0x23b7700u  /* the data segment ends at 0x23b7668, its page at 0x23b8000 */
+#define PROBE_INPUT 0x1ed53b0u
+static unsigned char *probe_image;
+void runtime_camera_probe_install(unsigned char *image, size_t size) {
+    static const unsigned char entry[6]={0x55,0x48,0x89,0xe5,0x41,0x57}; /* push rbp; mov rbp,rsp; push r15 */
+    const char *e=getenv("GOW3_MOVE_LOG");
+    if (e && !strcmp(e,"0")) return;
+    if (size<PROBE_SLOT+16 || memcmp(image+PROBE_ENTRY,entry,6)) { puts("Move: camera probe not installed (another build of the game)"); return; }
+    for (unsigned i=0;i<64;++i) if (image[PROBE_CAVE+i] || (i<16 && image[PROBE_SLOT+i])) { puts("Move: camera probe not installed (no free space)"); return; }
+    unsigned char *c=image+PROBE_CAVE;
+    int32_t rel;
+    c[0]=0x48; c[1]=0x89; c[2]=0x3d; rel=(int32_t)(PROBE_SLOT-(PROBE_CAVE+7)); memcpy(c+3,&rel,4);      /* mov [slot], rdi */
+    c[7]=0xf0; c[8]=0xff; c[9]=0x05; rel=(int32_t)(PROBE_SLOT+8-(PROBE_CAVE+14)); memcpy(c+10,&rel,4);  /* lock inc dword [slot+8] */
+    memcpy(c+14,entry,6);
+    c[20]=0xe9; rel=(int32_t)(PROBE_RESUME-(PROBE_CAVE+25)); memcpy(c+21,&rel,4);                       /* jmp back */
+    unsigned char *at=image+PROBE_ENTRY;
+    at[0]=0xe9; rel=(int32_t)(PROBE_CAVE-(PROBE_ENTRY+5)); memcpy(at+1,&rel,4); at[5]=0x90;
+    probe_image=image;
+    puts("Move: camera probe installed");
+}
+static void move_log(const PadData *d) {
+    static uint64_t next;
+    static uint32_t last_runs;
+    if (!probe_image) return;
+    const uint64_t now=now_us();
+    if (now<next) return;
+    if (abs(d->left_x-128)<24 && abs(d->left_y-128)<24 && abs(d->right_x-128)<24 && abs(d->right_y-128)<24) return;
+    next=now+500000;
+    const float *in=(const float *)(probe_image+PROBE_INPUT+0x3b0);
+    char camera[220]="camera: not in use";
+    uint32_t runs; memcpy(&runs,probe_image+PROBE_SLOT+8,4);
+    if (runs!=last_runs) {
+        /* Ran since the last line, so the object is alive. */
+        uintptr_t cam; memcpy(&cam,probe_image+PROBE_SLOT,8);
+        const float *p=(const float *)(cam+0x10), *t=(const float *)(cam+0x170), *turn=(const float *)(cam+0x220);
+        const float heading=atan2f(t[0]-p[0],t[2]-p[2])*57.2958f;
+        snprintf(camera,sizeof camera,"camera %.2f %.2f %.2f look-at %.2f %.2f %.2f heading %.1f deg turn pitch %.3f yaw %.3f (%u runs)",
+                 p[0],p[1],p[2],t[0],t[1],t[2],heading,turn[0],turn[1],runs-last_runs);
+    }
+    last_runs=runs;
+    printf("Move: sticks L %d,%d R %d,%d | q %.3f %.3f %.3f %.3f w %.2f %.2f %.2f | game input %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f | %s\n",
+           d->left_x,d->left_y,d->right_x,d->right_y,d->orientation[0],d->orientation[1],d->orientation[2],d->orientation[3],
+           d->angular_velocity[0],d->angular_velocity[1],d->angular_velocity[2],
+           in[0],in[1],in[2],in[3],in[4],in[5],in[6],in[7],camera);
+}
 static void sample(PadData *d) {
     sample_host(d);
     fake_motion(d);
@@ -646,6 +707,7 @@ static void sample(PadData *d) {
         else hold_after_capture=0;
     }
     assign_touch_ids(d);
+    move_log(d);
 }
 
 static ABI int32_t pad_init(void) {

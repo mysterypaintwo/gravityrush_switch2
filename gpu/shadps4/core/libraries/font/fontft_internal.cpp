@@ -2171,6 +2171,26 @@ s32 RenderCharGlyphImageCore(Libraries::Font::OrbisFontHandle fontHandle, u32 co
         return cleanup_return(ORBIS_FONT_ERROR_NO_SUPPORT_GLYPH);
     }
 
+    // gow3: Switch prompts. The game draws its button characters here (the metrics come from
+    // the paths that already substitute them), so the Switch button glyph is drawn from the
+    // extension face, at the size just set on the game's face.
+    {
+        FT_Face game_face = static_cast<FT_Face>(font_obj->ft_face);
+        FT_Face face = game_face;
+        const FT_UInt button = game_face && game_face->size
+                                   ? Gow3ButtonGlyphs::GlyphIndex(face, static_cast<FT_ULong>(mapped_code))
+                                   : 0;
+        if (button && face != game_face) {
+            const FT_Size_Metrics& m = game_face->size->metrics;
+            if (FT_Set_Char_Size(face, FT_F26Dot6(m.x_ppem) << 6, FT_F26Dot6(m.y_ppem) << 6, 72, 72) == 0) {
+                font_obj->ft_face = face;
+                rc = RenderGlyphIndexToSurface(*font_obj, button, surf, x, y, metrics, result);
+                font_obj->ft_face = game_face;
+                return cleanup_return(rc);
+            }
+        }
+    }
+
     u32 glyph_index = 0;
     rc = driver->glyph_index(font_obj, mapped_code, &glyph_index);
     if (rc != ORBIS_OK || glyph_index == 0) {

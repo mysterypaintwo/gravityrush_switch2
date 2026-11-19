@@ -100,8 +100,36 @@ float base_scale = 1.0f;
 // Present rate for the FPS counter.
 std::chrono::steady_clock::time_point last_present{};
 float frame_ms_avg = 0.0f;
+// The game's own frame rate: its flips (new frames) per second, over half-second windows. The
+// presenter shows a frame again at each vblank while the game is slower, so the present rate can
+// read 60 while the game makes 33 new frames a second.
+extern "C" volatile unsigned long long gow3_flip_count; // videoout/driver.cpp
+#ifdef __SWITCH__
+extern "C" void gr_suspend_boot_done(void) __attribute__((weak));
+#endif
+std::atomic<float> game_fps{0.0f};
+std::atomic<unsigned> presents{0}; // presented frames since start (the menu opens after a while)
+void UpdateGameFps() {
+    static auto window_start = std::chrono::steady_clock::now();
+    static unsigned long long window_flips = 0;
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsed = std::chrono::duration<float>(now - window_start).count();
+    if (elapsed >= 0.5f) {
+        const unsigned long long flips = __atomic_load_n(&gow3_flip_count, __ATOMIC_RELAXED);
+        game_fps = float(flips - window_flips) / elapsed;
+        window_flips = flips;
+        window_start = now;
+    }
+}
 
 void SetOpen(bool value) {
+#ifdef __SWITCH__
+    // Switch 2: opening the menu during startup ended the process (and the homebrew loader with
+    // it); it opens once the game has shown ~10 s of frames, and not over a loading screen.
+    if (value && (presents.load(std::memory_order_relaxed) < 600 || loading)) {
+        return;
+    }
+#endif
     if (menu_open.exchange(value) == value) {
         return;
     }
@@ -281,8 +309,8 @@ std::string OverlayText() {
         P::Start(*overlay_instance);
     }
     P::Sample sample = P::Latest();
-    sample.fps = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f;
-    sample.frame_ms = frame_ms_avg;
+    sample.fps = game_fps.load();
+    sample.frame_ms = sample.fps > 0.0f ? 1000.0f / sample.fps : 0.0f;
     sample.upscaler = UpscalerLabel(s.upscaler);
     return P::Format(sample, items, s.overlay_layout == 0);
 }
@@ -463,6 +491,9 @@ void OverlayTab() {
         CheckRow("Swap A and B (next launch)", Gow3Settings::Get().swap_ab,
                  "On: A is the PS4's cross (confirm) and B its circle, in the game and its prompts. "
                  "Off: by position (B cross, A circle). Takes effect when the game is launched again.");
+        CheckRow("Motion controls (next launch)", Gow3Settings::Get().gyro,
+                 "On: tilting the console aims the camera, as the PS4 controller's motion sensor did. "
+                 "Off: the game sees the controller lying still. Takes effect when the game is launched again.");
 #endif
         const u32 total = background_total;
         if (total) {
@@ -1153,6 +1184,18 @@ bool QuitDue() {
 
 // GOW3_FPS_LOG=1: presented frames per second and the worst frame, every 5 s (benchmarks).
 void LogPresent() {
+    const unsigned shown = presents.fetch_add(1, std::memory_order_relaxed) + 1;
+#ifdef __SWITCH__
+    // The boot is over (as for the menu: ~10 s of frames, not on a loading screen): HOME and
+    // sleep are allowed again (switch2/host/gr_suspend_horizon.c).
+    static bool booted = false;
+    if (!booted && shown >= 600 && !loading) {
+        booted = true;
+        if (gr_suspend_boot_done) gr_suspend_boot_done();
+    }
+#else
+    (void)shown;
+#endif
     static const bool fps_log = std::getenv("GOW3_FPS_LOG") != nullptr;
     if (!fps_log) {
         return;
@@ -1165,8 +1208,12 @@ void LogPresent() {
     worst = std::max(worst, std::chrono::duration<float, std::milli>(now - previous).count());
     previous = now;
     const float elapsed = std::chrono::duration<float>(now - window_start).count();
+    static unsigned long long window_flips = 0;
     if (elapsed >= 5.0f) {
-        std::printf("Perf: %.1f FPS, worst frame %.1f ms\n", frames / elapsed, worst);
+        const unsigned long long flips = __atomic_load_n(&gow3_flip_count, __ATOMIC_RELAXED);
+        std::printf("Perf: %.1f FPS (game %.1f new frames/s), worst frame %.1f ms\n", frames / elapsed,
+                    double(flips - window_flips) / elapsed, worst);
+        window_flips = flips;
         std::fflush(stdout);
         window_start = now;
         frames = 0;
@@ -1182,6 +1229,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (ms > 0.0f && ms < 1000.0f) {
         frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
     }
+    UpdateGameFps();
     ConfirmRestart();
     PollChoiceInput();
     if (!Visible()) {

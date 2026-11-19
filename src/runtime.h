@@ -135,6 +135,8 @@ uint64_t runtime_memory_flexible_available(void);
 uintptr_t runtime_extra_resolve(const char *name);
 void runtime_extra_report(void);
 unsigned char *runtime_image_base(void);
+/* Movement diagnostics (runtime_pad.c): hooks the game's ground camera before its code runs. */
+void runtime_camera_probe_install(unsigned char *image, size_t size);
 int runtime_sse4a_emulate(void *context_record);
 int runtime_newisa_emulate(void *context_record);
 void runtime_newisa_install(unsigned char *image, uint64_t image_size);

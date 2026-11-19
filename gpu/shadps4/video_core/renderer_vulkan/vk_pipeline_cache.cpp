@@ -202,6 +202,9 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
         const auto params_vc = AmdGpu::GetParams(regs.vs_program);
         info.hw.gs.vs_copy = params_vc.code;
         info.hw.gs.vs_copy_hash = params_vc.hash;
+        info.hw.gs.emulate_depth_negative_one_to_one =
+            !instance.IsDepthClipControlSupported() &&
+            regs.clipper_control.clip_space == AmdGpu::ClipSpace::MinusWToW;
         DumpShader(info.hw.gs.vs_copy, info.hw.gs.vs_copy_hash, Shader::HwStage::Vertex, 0,
                    "copy.bin");
         break;

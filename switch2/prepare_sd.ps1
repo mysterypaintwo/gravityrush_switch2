@@ -80,8 +80,36 @@ foreach ($dir in 'sce_module', 'sce_sys', 'arc') {
 
 $nro = Join-Path $repo 'out\gr_switch\gravityrush_remastered.nro'
 if (Test-Path -LiteralPath $nro) {
-    Copy-Item -LiteralPath $nro -Destination $dest -Force
-    Write-Host '== gravityrush_remastered.nro copied'
+    # The homebrew menu icon: your game's own icon (sce_sys\icon0.png) as a 256x256 JPEG, put into
+    # the NRO copied to the SD card (the built NRO has none). Needs elf2nro (devkitPro tools).
+    $elf = [IO.Path]::ChangeExtension($nro, '.elf')
+    $nacp = [IO.Path]::ChangeExtension($nro, '.nacp')
+    $png = Join-Path $Game 'sce_sys\icon0.png'
+    $devkitpro = if ($env:DEVKITPRO) { $env:DEVKITPRO } else { 'C:\devkitPro' }
+    $elf2nro = Join-Path $devkitpro 'tools\bin\elf2nro.exe'
+    $done = $false
+    if ((Test-Path -LiteralPath $elf) -and (Test-Path -LiteralPath $nacp) -and (Test-Path -LiteralPath $png) -and (Test-Path -LiteralPath $elf2nro)) {
+        $jpg = Join-Path ([IO.Path]::GetTempPath()) 'gravityrush_icon.jpg'
+        try {
+            Add-Type -AssemblyName System.Drawing
+            $src = [Drawing.Image]::FromFile($png)
+            $bmp = New-Object Drawing.Bitmap 256, 256
+            $g = [Drawing.Graphics]::FromImage($bmp)
+            $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $g.DrawImage($src, 0, 0, 256, 256)
+            $g.Dispose(); $src.Dispose()
+            $bmp.Save($jpg, [Drawing.Imaging.ImageFormat]::Jpeg); $bmp.Dispose()
+            & $elf2nro $elf (Join-Path $dest 'gravityrush_remastered.nro') "--icon=$jpg" "--nacp=$nacp" | Out-Null
+            $done = $LASTEXITCODE -eq 0
+        } catch { $done = $false }
+        Remove-Item -LiteralPath $jpg -ErrorAction SilentlyContinue
+    }
+    if ($done) {
+        Write-Host "== gravityrush_remastered.nro copied, with your game's icon"
+    } else {
+        Copy-Item -LiteralPath $nro -Destination $dest -Force
+        Write-Host '== gravityrush_remastered.nro copied (without an icon: see switch2\SETUP.txt)'
+    }
 } else {
     Write-Host "== gravityrush_remastered.nro is not built yet: copy it to $dest when it is"
 }

@@ -17,6 +17,7 @@
  * The handheld touch screen is the gamepad's touch pad (1280x720 -> 0..1). No keyboard or mouse:
  * their functions report nothing, so those code paths stay idle. */
 #pragma once
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -146,16 +147,33 @@ static inline bool SDL_GetGamepadButton(SDL_Gamepad* g, SDL_GamepadButton b)
     return want && (g->buttons & want);
 }
 
+/* Sticks: a full push rarely reaches libnx's +-32767 (and less on the diagonals), so the game saw
+ * a partial push at full tilt and the player walked slowly and off-angle. Each stick is scaled by
+ * the largest radius it has reached (from 26000 up to 32767), within the unit circle. */
+static inline void sdl_horizon_stick(const HidAnalogStickState* s, int index, int32_t* x, int32_t* y)
+{
+    static float reach[2] = {26000.0f, 26000.0f};
+    const float fx = (float)s->x, fy = (float)s->y;
+    const float r = sqrtf(fx * fx + fy * fy);
+    if (r > reach[index]) reach[index] = r < 32767.0f ? r : 32767.0f;
+    float scale = 32767.0f / reach[index];
+    if (r * scale > 32767.0f) scale = 32767.0f / r;
+    *x = (int32_t)(fx * scale);
+    *y = (int32_t)(fy * scale);
+}
+
 static inline int16_t SDL_GetGamepadAxis(SDL_Gamepad* g, SDL_GamepadAxis a)
 {
     if (!g) return 0;
-    const int32_t y_inverted[2] = {-(int32_t)g->sticks[0].y, -(int32_t)g->sticks[1].y}; /* SDL: up is negative */
+    int32_t sx[2], sy[2];
+    sdl_horizon_stick(&g->sticks[0], 0, &sx[0], &sy[0]);
+    sdl_horizon_stick(&g->sticks[1], 1, &sx[1], &sy[1]);
     int32_t v = 0;
     switch (a) {
-    case SDL_GAMEPAD_AXIS_LEFTX: v = g->sticks[0].x; break;
-    case SDL_GAMEPAD_AXIS_LEFTY: v = y_inverted[0]; break;
-    case SDL_GAMEPAD_AXIS_RIGHTX: v = g->sticks[1].x; break;
-    case SDL_GAMEPAD_AXIS_RIGHTY: v = y_inverted[1]; break;
+    case SDL_GAMEPAD_AXIS_LEFTX: v = sx[0]; break;
+    case SDL_GAMEPAD_AXIS_LEFTY: v = -sy[0]; break; /* SDL: up is negative */
+    case SDL_GAMEPAD_AXIS_RIGHTX: v = sx[1]; break;
+    case SDL_GAMEPAD_AXIS_RIGHTY: v = -sy[1]; break;
     case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: v = (g->buttons & HidNpadButton_ZL) ? 32767 : 0; break;
     case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: v = (g->buttons & HidNpadButton_ZR) ? 32767 : 0; break;
     }

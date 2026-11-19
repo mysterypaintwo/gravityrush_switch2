@@ -318,6 +318,7 @@ int main(int argc, char** argv)
      *   European release); without it, it starts in the Japanese region and shows Japanese text
      *   whatever its language. JPN leaves the region argument out.
      * - swap_ab=1: A is the PS4's cross (confirm) and B its circle (GOW3_BUTTON_LABELS=swap_ab).
+     * - gyro=off: no motion sensor data reaches the game (GOW3_GYRO=0).
      * GOW3_LANGUAGE (a PS4 code) overrides the language. */
     static const struct { const char* key; int code; } languages[] = {
         {"ENG", 18}, {"FRA", 2}, {"DEU", 4}, {"ITA", 5}, {"ESP", 3},
@@ -328,7 +329,7 @@ int main(int argc, char** argv)
     setenv("GOW3_CONFIG", options_file, 0);
     {
         const char* key = "ENG";
-        int code = 18, swap_ab = 0;
+        int code = 18, swap_ab = 0, gyro = 1;
         FILE* f = fopen(options_file, "r");
         if (f) {
             char text[256];
@@ -343,6 +344,7 @@ int main(int argc, char** argv)
                             if (languages[l].code == number) { key = languages[l].key; code = number; }
                 }
                 if (sscanf(text, " swap_ab = %d", &number) == 1) swap_ab = number != 0;
+                if (sscanf(text, " gyro = %31[A-Za-z0-9]", value) == 1) gyro = strcasecmp(value, "off") && strcmp(value, "0");
             }
             fclose(f);
         }
@@ -354,6 +356,7 @@ int main(int argc, char** argv)
         snprintf(text, sizeof text, "%d", code);
         setenv("GOW3_LANGUAGE", text, 1);
         if (swap_ab) setenv("GOW3_BUTTON_LABELS", "swap_ab", 0);
+        if (!gyro) setenv("GOW3_GYRO", "0", 0);
         /* The region argument for this language. */
         char args_path[600];
         snprintf(args_path, sizeof args_path, "%s/args.txt", game_dir);
@@ -363,14 +366,17 @@ int main(int argc, char** argv)
             fputs("-region E\r\n", f);
             fclose(f);
         }
-        snprintf(text, sizeof text, "language: %s (PS4 code %d, %s), A/B %s", key, code,
-                 code == 0 ? "Japanese region" : "region E", swap_ab ? "swapped (A = cross)" : "by position (B = cross)");
+        snprintf(text, sizeof text, "language: %s (PS4 code %d, %s), A/B %s, gyro %s", key, code,
+                 code == 0 ? "Japanese region" : "region E", swap_ab ? "swapped (A = cross)" : "by position (B = cross)",
+                 gyro ? "on" : "off");
         crumb(text);
     }
     /* GPU memory: the texture cache frees images not used lately past this budget (the driver
      * reports no budget of its own; images reached 1.4 GiB at the first gameplay and the heap
-     * ran out). */
-    setenv("GOW3_GC_BUDGET_MB", "1200", 0);
+     * ran out). At 1000 MiB the heap still ran out after ~6 minutes, with the staging pool
+     * keeping 240 MiB it no longer used (it keeps up to 512 MiB by default). */
+    setenv("GOW3_GC_BUDGET_MB", "800", 0);
+    setenv("GOW3_STAGING_KEEP_MB", "64", 0);
     /* Every run: the heartbeat (heap report every 20 s) and the frame rate every 5 s. */
     setenv("GR_HEARTBEAT", "1", 1);
     setenv("GOW3_FPS_LOG", "1", 1);

@@ -1599,6 +1599,12 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
 
 void TextureCache::GarbageCollectImages() {
     Gow3Stats::Timer gc_timer{Gow3Stats::t_gc};
+    // GOW3_GC_BUDGET_MB=N: a fixed budget (tests on a desktop; the Switch 2's default, whose
+    // driver reports neither usage nor a budget: there the images' own sizes are compared).
+    static const u64 forced_budget = [] {
+        const char* env = std::getenv("GOW3_GC_BUDGET_MB");
+        return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
+    }();
     if (instance.CanReportMemoryUsage()) {
         total_used_memory = instance.GetDeviceMemoryUsage();
         // gow3: on integrated GPUs (Steam Deck) the usage covers system-memory heaps holding
@@ -1606,19 +1612,19 @@ void TextureCache::GarbageCollectImages() {
         // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
         // collector evicted images used two or three frames ago on every submission and wrote
         // GPU-written ones back. Compare with the driver's current budget instead.
-        // GOW3_GC_BUDGET_MB=N: this rule with a fixed budget on any GPU (tests on a desktop).
-        static const u64 forced_budget = [] {
-            const char* env = std::getenv("GOW3_GC_BUDGET_MB");
-            return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
-        }();
-        if (instance.IsIntegrated() || forced_budget) {
-            const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
+        if (instance.IsIntegrated() && !forced_budget) {
+            const u64 budget = instance.GetDeviceMemoryBudgetNow();
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;
                 pressure_gc_memory = budget / 100 * 85;
                 critical_gc_memory = budget / 100 * 95;
             }
         }
+    }
+    if (forced_budget) {
+        trigger_gc_memory = forced_budget / 10 * 7;
+        pressure_gc_memory = forced_budget / 100 * 85;
+        critical_gc_memory = forced_budget / 100 * 95;
     }
     if (total_used_memory < trigger_gc_memory) {
         return;

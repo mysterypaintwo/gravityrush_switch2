@@ -439,6 +439,39 @@ static void on_applet_message(AppletHookType hook, void* param)
 
 static AppletHookCookie hook_cookie;
 
+/* During the boot (until the game has shown ~10 s of frames: gr_suspend_boot_done, from
+ * gpu/shim/gow3_overlay.cpp) HOME and sleep wait: suspending then could end the whole homebrew
+ * session (the GPU and the game's threads are still being set up). HOME is blocked outright;
+ * sleep waits on a sleep lock, as an official game holds one while it saves. */
+static atomic_bool boot_guard;
+static bool sleep_locked;
+static void begin_boot_guard(void)
+{
+    const Result home = appletBeginBlockingHomeButton(0);
+    if (R_SUCCEEDED(home)) atomic_store(&boot_guard, true);
+    char line[120];
+    snprintf(line, sizeof line, "boot guard: HOME blocked (%#x)", home);
+    gr_crumb(line);
+}
+static void* acquire_sleep_lock(void* arg)
+{
+    (void)arg;
+    /* It waits for the lock's event, so on its own thread: the boot never waits for it. */
+    const Result r = appletRequestToAcquireSleepLock();
+    sleep_locked = R_SUCCEEDED(r);
+    char line[120];
+    snprintf(line, sizeof line, "boot guard: sleep lock %s (%#x)", sleep_locked ? "held" : "not held", r);
+    gr_crumb(line);
+    return NULL;
+}
+void gr_suspend_boot_done(void)
+{
+    if (!atomic_exchange(&boot_guard, false)) return;
+    appletEndBlockingHomeButton();
+    if (sleep_locked) { appletReleaseSleepLock(); sleep_locked = false; }
+    gr_crumb("boot guard: over, HOME and sleep allowed");
+}
+
 void gr_suspend_init(void)
 {
     applet_thread = threadGetCurHandle();
@@ -448,6 +481,11 @@ void gr_suspend_init(void)
     appletSetFocusHandlingMode(AppletFocusHandlingMode_NoSuspend);
     appletSetRestartMessageEnabled(true);
     appletHook(&hook_cookie, on_applet_message, NULL);
+    if (!getenv("GR_NO_BOOT_GUARD")) {
+        begin_boot_guard();
+        pthread_t t;
+        if (!pthread_create(&t, NULL, acquire_sleep_lock, NULL)) pthread_detach(t);
+    }
 }
 
 void gr_suspend_add_listener(GrSuspendFn fn)

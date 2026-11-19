@@ -584,6 +584,7 @@ int main(int argc, char **argv) {
         _exit(missing ? 1 : 0);
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
+    runtime_camera_probe_install(image, size);
 
     /* --- guest memory rights. Box64 reads the x86 code, so the host pages only need R/W; the
      * dynarec translates only what is marked executable. */

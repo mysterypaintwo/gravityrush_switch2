@@ -333,6 +333,9 @@ extern "C" int gow3gpu_handle_fault(void* ucontext, void* address) {
 namespace VideoCore {
 extern std::atomic<u64> g_gow3_arena_bytes, g_gow3_arena_count;
 }
+namespace Vulkan {
+extern std::atomic<u64> g_gow3_staging_bytes;
+}
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 /// Bring-up (Switch 2): GPU memory by Vulkan heap (VMA's budget: blocks the driver gave, bytes in
 /// use) and what the dense buffer arenas hold, one line to `line`.
@@ -346,9 +349,10 @@ extern "C" void gow3gpu_memory_report(void (*line)(const char*)) {
     const VkPhysicalDeviceMemoryProperties* props = nullptr;
     vmaGetMemoryProperties(allocator, &props);
     char out[240];
-    int n = std::snprintf(out, sizeof out, "gpu memory: arenas %llu MiB in %llu;",
+    int n = std::snprintf(out, sizeof out, "gpu memory: arenas %llu MiB in %llu; staging %llu MiB;",
                           (unsigned long long)(VideoCore::g_gow3_arena_bytes.load() >> 20),
-                          (unsigned long long)VideoCore::g_gow3_arena_count.load());
+                          (unsigned long long)VideoCore::g_gow3_arena_count.load(),
+                          (unsigned long long)(Vulkan::g_gow3_staging_bytes.load() >> 20));
     for (u32 h = 0; props && h < props->memoryHeapCount && n < int(sizeof out) - 48; ++h) {
         n += std::snprintf(out + n, sizeof out - size_t(n), " heap %u: %llu MiB blocks, %llu MiB used (%u allocations);", h,
                            (unsigned long long)(budgets[h].statistics.blockBytes >> 20),
