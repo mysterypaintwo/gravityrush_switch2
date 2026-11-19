@@ -780,6 +780,7 @@ int main(int argc, char **argv) {
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
     runtime_newisa_install(image, size);
     menu_confirm_patch(size);
+    runtime_camera_probe_install(image, size); /* the movement log (GOW3_MOVE_LOG), as on the ARM hosts */
 #ifdef _WIN32
     char hooks_sfo[4096], hooks_serial[32]="";
     snprintf(hooks_sfo,sizeof(hooks_sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");

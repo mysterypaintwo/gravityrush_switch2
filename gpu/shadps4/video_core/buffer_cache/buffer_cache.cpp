@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <cstdio>
 #include <chrono>
 #include <array>
 #include <map>
@@ -223,6 +224,26 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         gpu_modified_ranges.Subtract(address, size);
     });
     if (total_size_bytes == 0) {
+        return;
+    }
+    // gow3 (bring-up): GOW3_DOWNLOAD_LOG=1 prints each copy of GPU-written buffer data back
+    // into game memory (the first 500); GOW3_NO_GPU_DOWNLOAD=1 skips them, to test whether a
+    // copy-back overwrites newer CPU data (Kat's movement: X and Z speeds equal, 2026-11-19).
+    static const bool download_log = std::getenv("GOW3_DOWNLOAD_LOG") != nullptr;
+    static const bool no_download = std::getenv("GOW3_NO_GPU_DOWNLOAD") != nullptr;
+    if (download_log) {
+        static std::atomic<int> logged{0};
+        for (const auto& copy : copies) {
+            if (logged.fetch_add(1) < 500) {
+                std::printf("GPU download: 0x%llx, %llu bytes (asked 0x%llx +%llu)%s\n",
+                            (unsigned long long)(arena_base + copy.srcOffset),
+                            (unsigned long long)copy.size, (unsigned long long)device_addr,
+                            (unsigned long long)size, no_download ? " skipped" : "");
+            }
+        }
+    }
+    if (no_download) {
+        memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
         return;
     }
     if (arena->imported) {

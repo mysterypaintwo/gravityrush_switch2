@@ -715,7 +715,7 @@ static void move_log(const PadData *d) {
         last_buttons=d->buttons;
     }
     if (now<next) return;
-    if (abs(d->left_x-128)<24 && abs(d->left_y-128)<24 && abs(d->right_x-128)<24 && abs(d->right_y-128)<24) return;
+    if (abs(d->left_x-128)<24 && abs(d->left_y-128)<24 && abs(d->right_x-128)<24 && abs(d->right_y-128)<24 && !(fast && d->buttons)) return;
     next=now+(fast ? 100000 : 500000);
 #ifdef __SWITCH__
     /* The console's own stick readings, before any scaling (src/gr_sdl_horizon.h). */
