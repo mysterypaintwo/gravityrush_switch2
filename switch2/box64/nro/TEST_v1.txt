@@ -1,0 +1,13 @@
+box64e_smoke v1: how to test
+============================
+
+The first run of the x86-64 translator (Box64, embedded) on the console: it translates a few
+small x86-64 functions into ARM64 code in kaiHEN's JIT memory and runs them, including calls
+from translated code into native code and back.
+
+1. Copy box64e_smoke.nro to the SD card and start it from hbmenu.
+2. It runs for a second or less, then shows "box64e smoke test: ..." and "Press + to exit."
+   If it crashes or hangs instead, note how long it took and what was on screen.
+3. Press + to exit.
+4. Copy sdmc:/box64e_smoke.txt into switch2/logs/ (it is written line by line, so it is
+   useful after a crash too).

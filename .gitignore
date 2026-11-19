@@ -35,3 +35,4 @@ launcher/assets/
 /Gravity Rush.exe
 /Gravity Rush Launcher.exe
 third_party/box64/
+.DS_Store
