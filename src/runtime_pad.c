@@ -700,6 +700,45 @@ int runtime_pad_menu_swapped(void) {
     if (on<0) { const char *e=getenv("GOW3_MENU_SWAP"); on=e && e[0]=='1'; }
     return on && !gameplay_now;
 }
+#if defined(__APPLE__)
+/* GOW3_FIND_KAT=1 (macOS host, diagnostics): at the first line with the camera in use, finds the
+ * guest memory holding the camera's look-at point (Kat's position) and from then on appends
+ * 0x800 bytes around each match to out/katdump.bin at every line, to find the fields of her
+ * movement. Record: f64 seconds, u32 match, u32 0, u64 address, then the bytes. */
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#define KAT_SPAN 0x800u
+static uintptr_t kat_hits[16];
+static int kat_count=-1;
+static FILE *kat_file;
+static void kat_find(const float *t) {
+    kat_count=0;
+    mach_vm_address_t a=0x7000000000ull;
+    while (a<0x8400000000ull && kat_count<16) {
+        mach_vm_size_t size; vm_region_basic_info_data_64_t info; mach_msg_type_number_t n=VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj;
+        if (mach_vm_region(mach_task_self(),&a,&size,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&n,&obj)!=KERN_SUCCESS) break;
+        if ((info.protection&3)==3 && a+size<=0x8400000000ull)
+            for (const float *f=(const float *)(uintptr_t)a, *e=(const float *)(uintptr_t)(a+size)-3; f<e && kat_count<16; f++)
+                if (fabsf(f[0]-t[0])<0.02f && fabsf(f[2]-t[2])<0.02f && fabsf(f[1]-t[1])<3.0f && (uintptr_t)f>=0x7000000000ull+KAT_SPAN/2) {
+                    kat_hits[kat_count++]=(uintptr_t)f;
+                    printf("Kat: match %d at 0x%llx: %.3f %.3f %.3f\n",kat_count-1,(unsigned long long)(uintptr_t)f,f[0],f[1],f[2]);
+                }
+        a+=size;
+    }
+    kat_file=fopen("out/katdump.bin","wb");
+    printf("Kat: %d matches\n",kat_count);
+}
+static void kat_dump(void) {
+    if (!kat_file) return;
+    const double s=(double)now_us()/1e6;
+    for (int i=0;i<kat_count;i++) {
+        const uint32_t hdr[2]={(uint32_t)i,0}; const uint64_t at=kat_hits[i]-KAT_SPAN/2;
+        fwrite(&s,8,1,kat_file); fwrite(hdr,4,2,kat_file); fwrite(&at,8,1,kat_file);
+        fwrite((const void *)(uintptr_t)at,1,KAT_SPAN,kat_file);
+    }
+    fflush(kat_file);
+}
+#endif
 static void move_log(const PadData *d) {
     static uint64_t next;
     static uint32_t last_runs;
@@ -733,6 +772,12 @@ static void move_log(const PadData *d) {
         const float heading=atan2f(t[0]-p[0],t[2]-p[2])*57.2958f;
         snprintf(camera,sizeof camera,"camera %.2f %.2f %.2f look-at %.2f %.2f %.2f heading %.1f deg turn pitch %.3f yaw %.3f (%u runs)",
                  p[0],p[1],p[2],t[0],t[1],t[2],heading,turn[0],turn[1],runs-last_runs);
+#if defined(__APPLE__)
+        static int find=-1;
+        if (find<0) { const char *e=getenv("GOW3_FIND_KAT"); find=e && e[0]=='1'; }
+        if (find && kat_count<0 && (abs(d->left_x-128)>=24 || abs(d->left_y-128)>=24)) kat_find(t);
+        if (find) kat_dump();
+#endif
     }
     last_runs=runs;
     printf("Move: sticks L %d,%d R %d,%d | q %.3f %.3f %.3f %.3f w %.2f %.2f %.2f | game input %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f | %s\n",

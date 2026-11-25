@@ -7,12 +7,20 @@ game prints "SetPlayerLimit"), waits 10 s, then pushes the left stick up, down, 
 for 2 s each, with 2 s at rest between pushes, twice; no buttons in that part, so Kat stays put.
 Each output line is prefixed with seconds since start, as the analysis scripts expect.
 
+Events the game interrupts a push with are written to the log as "#event <kind>" lines, and the
+analysis scripts leave out pushes containing one:
+- textbox: a trigger area opened a yes/no box ("invoke", "yesnolock", "Lock---" with no
+  "Lock free" within 2 s); circle is pressed until it closes ("Lock free").
+- voidout: the game put Kat back ("Blackout > start" then "pc_position memory2").
+- falling: the look-at point (Kat) drops faster than 3 units/s.
+
   python drive.py --log run.log -- <host command and arguments>
 
 Then: python diag.py run.log  and  python dirs.py run.log
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -38,15 +46,44 @@ def main():
     env = dict(os.environ, GOW3_MOVE_LOG="fast", GOW3_PAD_FILE=pad)
     t0 = time.time()
     loaded = threading.Event()
+    state = {"lock": None, "blackout": False, "y": None, "falling": False}
+    lock = threading.Lock()
+    look = re.compile(r"Move: sticks .*look-at \S+ (\S+) \S+")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                             bufsize=1, text=True, errors="replace")
 
     def pump():
         with open(a.log, "w", encoding="utf-8") as out:
             for line in proc.stdout:
+                now = time.time() - t0
                 if "SetPlayerLimit" in line:
                     loaded.set()
-                out.write("%7.1f %s" % (time.time() - t0, line))
+                out.write("%7.1f %s" % (now, line))
+                with lock:
+                    events = []
+                    if "Lock free" in line:
+                        state["lock"] = None
+                    elif line.startswith("Lock---"):
+                        state["lock"] = now
+                    if "Blackout > start" in line:
+                        state["blackout"] = True
+                    elif "pc_position memory2" in line and state["blackout"]:
+                        events.append("voidout")
+                        state["blackout"] = False
+                    elif "Fade In > end" in line:
+                        state["blackout"] = False
+                    m = look.search(line)
+                    if m:
+                        y, t = float(m.group(1)), now
+                        if state["y"]:
+                            py, pt = state["y"]
+                            fall = t > pt and (py - y) / (t - pt) > 3.0
+                            if fall and not state["falling"]:
+                                events.append("falling")
+                            state["falling"] = fall
+                        state["y"] = (y, t)
+                for e in events:
+                    out.write("%7.1f #event %s\n" % (now, e))
                 out.flush()
 
     reader = threading.Thread(target=pump, daemon=True)
@@ -57,9 +94,22 @@ def main():
             f.write(text + "\n")
 
     play = None
+    textbox = False
     while time.time() - t0 < a.duration and proc.poll() is None:
         time.sleep(1)
         t = time.time() - t0
+        with lock:
+            opened = state["lock"]
+        if play is not None and opened is not None and t - opened > 2:
+            # A yes/no box: circle (cancel) on alternate seconds until it closes.
+            if not textbox:
+                print("textbox at %.0f s: pressing circle" % t)
+                with open(a.log, "a", encoding="utf-8") as out:
+                    out.write("%7.1f #event textbox\n" % t)
+                textbox = True
+            press("circle" if int(t) % 2 else "")
+            continue
+        textbox = False
         if play is None:
             if loaded.is_set():
                 play = t

@@ -505,6 +505,18 @@ void box64e_set_reg(x64emu_t* emu, int reg, uint64_t value) { emu->regs[reg & 15
 uint64_t box64e_xmm_lo(x64emu_t* emu, int reg) { return emu->xmm[reg & 15].q[0]; }
 void box64e_set_xmm_lo(x64emu_t* emu, int reg, uint64_t value) { emu->xmm[reg & 15].q[0] = value; }
 uint64_t box64e_rip(x64emu_t* emu) { return R_RIP; }
+/* Debugging (lldb watchpoints): the guest address of the instruction the interpreter is running
+ * on this thread, and of the one before it. */
+__attribute__((used, visibility("default"))) uint64_t box64e_debug_old_ip(void) { return box64e_thread_emu()->old_ip; }
+#ifdef DYNAREC
+#include "dynablock.h"
+/* The guest instruction a dynarec host address was translated from (0: not in a block). */
+__attribute__((used, visibility("default"))) uint64_t box64e_debug_guest_of(uint64_t native_pc)
+{
+    dynablock_t* db = FindDynablockFromNativeAddress((void*)(uintptr_t)native_pc);
+    return db ? getX64Address(db, (uintptr_t)native_pc) : 0;
+}
+#endif
 
 void box64e_dump(x64emu_t* emu, const char* why)
 {

@@ -1,7 +1,13 @@
 # Per stick push in a movement log: Kat's (look-at) displacement against the camera's forward.
 import math, re, sys
 rows = []
+# "#event" lines (drive.py): a textbox, void-out or fall; pushes containing one are left out.
+events = []
 for line in open(sys.argv[1], errors='replace'):
+    e = re.match(r'\s*([\d.]+) #event (\w+)', line)
+    if e:
+        events.append((float(e.group(1)), e.group(2)))
+        continue
     m = re.match(r'\s*([\d.]+) Move: sticks L (\d+),(\d+) .*camera ([-\d.]+) ([-\d.]+) ([-\d.]+) look-at ([-\d.]+) ([-\d.]+) ([-\d.]+)', line)
     if m:
         v = [float(x) for x in m.groups()]
@@ -15,6 +21,9 @@ for r in rows:
         if cur: segs.append(cur)
         cur = [key, r]
 if cur: segs.append(cur)
+def interrupted(s):
+    return [k for t, k in events if s[1][0] - 0.5 <= t <= s[-1][0] + 0.5]
+segs = [s for s in segs if not interrupted(s) or print(f'{s[1][0]:7.1f} {names.get(s[0], "?"):5} left out ({", ".join(interrupted(s))})')]
 for s in segs:
     key, first, last = s[0], s[1], s[-1]
     if key not in names or len(s) < 6: continue
